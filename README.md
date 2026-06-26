@@ -16,7 +16,7 @@ The sketch connects the ESP32-CAM to Wi-Fi, starts a small web server, and provi
 ### Requirements
 
 - AI Thinker ESP32-CAM board
-- USB-to-Serial adapter set to 5V
+- USB-to-Serial adapter
 - Arduino IDE
 - ESP32 board package installed in Arduino IDE
 
@@ -44,6 +44,8 @@ Connect the USB-to-Serial adapter to the ESP32-CAM:
 | TX | U0R |
 | RX | U0T |
 | GND | IO0 |
+
+Power the ESP32-CAM from the adapter's `5V` pin or another stable 5V supply. If your adapter has a separate voltage setting for UART logic, use 3.3V serial logic for `TX` and `RX`.
 
 `IO0` must be connected to `GND` only while uploading. After upload, disconnect `IO0` from `GND` and press the reset button.
 
@@ -80,3 +82,30 @@ http://192.168.1.50
 ```
 
 Make sure your computer or phone is connected to the same Wi-Fi network as the ESP32-CAM.
+
+### Fix upload error: `A serial exception error occurred: Write timeout`
+
+This error happens before the code starts running. It usually means the computer cannot reliably talk to the ESP32-CAM over the USB-to-Serial adapter.
+
+Try these checks in order:
+
+1. Close Serial Monitor or any other app using the same port.
+2. Confirm **Tools > Port** is the USB-to-Serial adapter port.
+3. Use a data USB cable, not a charge-only cable.
+4. Confirm `TX` and `RX` are crossed:
+   - Adapter `TX` -> ESP32-CAM `U0R`
+   - Adapter `RX` -> ESP32-CAM `U0T`
+5. Confirm all grounds are connected together.
+6. Power the ESP32-CAM from stable 5V. Weak USB power is a common cause of timeouts.
+7. Connect `IO0` to `GND` before clicking **Upload**.
+8. When Arduino IDE shows `Connecting...`, press and release the ESP32-CAM reset button once.
+9. If it still fails, change **Upload Speed** to `57600` or keep it at `115200`.
+10. Install or update the driver for your USB-to-Serial chip:
+    - CH340/CH341 driver for CH340 adapters
+    - CP210x driver for CP2102 adapters
+
+After a successful upload:
+
+1. Disconnect `IO0` from `GND`.
+2. Press reset.
+3. Open Serial Monitor at `115200` baud.

@@ -1,5 +1,47 @@
 # MOR-TECHNO-PROJECT
 
+## Backend for TMS traceability system
+
+The backend for the paper's **IoT-Based Internal Workflow Traceability System with AI-Powered Visual Verification** is in:
+
+- `backend/`
+
+It provides a FastAPI server with:
+
+- SQLite workflow database
+- RFID staff verification endpoint
+- receive and release log APIs
+- staff assignment API
+- inspection history API
+- dashboard metrics API
+- Gemini visual analyzer endpoint
+
+Start here:
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Then open:
+
+```text
+http://localhost:8000/docs
+```
+
+Put the real Gemini key in `backend/.env`, not in Arduino code or frontend JavaScript:
+
+```env
+GEMINI_API_KEY=your-real-gemini-api-key
+ESP32_CAPTURE_URL=http://YOUR_ESP32_IP/capture
+```
+
+See `backend/README.md` for the full API route list and frontend integration notes.
+
 ## ESP32-CAM setup code
 
 This repository includes an Arduino sketch for an AI Thinker ESP32-CAM module:

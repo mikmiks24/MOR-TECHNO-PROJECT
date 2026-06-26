@@ -9,7 +9,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -973,6 +972,7 @@
     const AUTH_USER = 'admin';
     const AUTH_PASSWORD = 'admin123';
     const SESSION_KEY = 'tms-service-center-authenticated';
+    let workflowChart;
 
     const getElement = (id) => document.getElementById(id);
 
@@ -1041,11 +1041,11 @@
 
     function initChart() {
       const canvas = getElement('workflowChart');
-      if (!canvas || typeof Chart === 'undefined') {
+      if (!canvas || workflowChart || typeof Chart === 'undefined') {
         return;
       }
 
-      new Chart(canvas, {
+      workflowChart = new Chart(canvas, {
         type: 'line',
         data: {
           labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
@@ -1080,6 +1080,28 @@
       });
     }
 
+    function loadChartLibrary() {
+      if (typeof Chart !== 'undefined') {
+        initChart();
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/chart.js';
+      script.async = true;
+      script.onload = initChart;
+      script.onerror = () => {
+        const canvas = getElement('workflowChart');
+        if (canvas) {
+          canvas.replaceWith(Object.assign(document.createElement('p'), {
+            className: 'empty-state',
+            textContent: 'Chart preview is unavailable while offline.'
+          }));
+        }
+      };
+      document.head.appendChild(script);
+    }
+
     function initAuth() {
       getElement('loginForm').addEventListener('submit', login);
 
@@ -1092,8 +1114,8 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       initNavigation();
-      initChart();
       initAuth();
+      loadChartLibrary();
     });
 
     window.login = login;

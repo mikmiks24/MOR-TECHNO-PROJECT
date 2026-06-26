@@ -11,6 +11,7 @@ The sketch connects the ESP32-CAM to Wi-Fi, starts a small web server, and provi
 - `/` - test page
 - `/capture` - single JPEG snapshot
 - `/stream` - live MJPEG stream
+- `/analyze` - capture one image and ask Gemini to identify objects
 - `/flash/on` and `/flash/off` - onboard flash LED control
 
 ### Requirements
@@ -68,12 +69,18 @@ Use these common settings:
    const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
    ```
 
-3. Connect `IO0` to `GND`.
-4. Click **Upload** in Arduino IDE.
-5. Disconnect `IO0` from `GND`.
-6. Press the ESP32-CAM reset button.
-7. Open **Tools > Serial Monitor** at `115200` baud.
-8. Copy the printed IP address into your browser.
+3. Optional: add a Gemini API key if you want object analysis:
+
+   ```cpp
+   const char *GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
+   ```
+
+4. Connect `IO0` to `GND`.
+5. Click **Upload** in Arduino IDE.
+6. Disconnect `IO0` from `GND`.
+7. Press the ESP32-CAM reset button.
+8. Open **Tools > Serial Monitor** at `115200` baud.
+9. Copy the printed IP address into your browser.
 
 Example:
 
@@ -82,6 +89,44 @@ http://192.168.1.50
 ```
 
 Make sure your computer or phone is connected to the same Wi-Fi network as the ESP32-CAM.
+
+### Gemini object analyzer
+
+The `/analyze` route captures one still image and sends it to the Gemini API for object identification.
+
+Configure these values near the top of `esp32_cam_setup.ino`:
+
+```cpp
+const char *GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
+const char *GEMINI_MODEL = "gemini-2.0-flash";
+const char *GEMINI_PROMPT =
+    "Identify the main objects visible in this ESP32-CAM image. "
+    "Return a short, clear bullet list and mention anything important or unusual.";
+```
+
+To use it:
+
+1. Get a Gemini API key from Google AI Studio.
+2. Paste the key into `GEMINI_API_KEY`.
+3. Upload the sketch again.
+4. Open the ESP32-CAM IP address in your browser.
+5. Click **Analyze objects with Gemini** or open:
+
+   ```text
+   http://YOUR_ESP32_IP/analyze
+   ```
+
+Close the live `/stream` page before running `/analyze`. The ESP32-CAM web server handles one long stream at a time, so an open stream can block analysis requests.
+
+For reliability, Gemini analysis uses a smaller still image than the live stream:
+
+```cpp
+const framesize_t GEMINI_ANALYSIS_FRAME_SIZE = FRAMESIZE_QVGA;
+```
+
+If Gemini misses details, try `FRAMESIZE_VGA`. If the ESP32 runs out of memory or the request fails, use `FRAMESIZE_QVGA`.
+
+Do not commit a real Gemini API key to a public repository.
 
 ### Adjust video size and lag
 

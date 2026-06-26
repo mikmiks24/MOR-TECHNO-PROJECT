@@ -83,25 +83,25 @@ http://192.168.1.50
 
 Make sure your computer or phone is connected to the same Wi-Fi network as the ESP32-CAM.
 
-### Reduce video lag
+### Adjust video size and lag
 
-The sketch is tuned for lower latency by default:
+The sketch uses a larger default frame:
 
 ```cpp
-const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QVGA;
+const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_VGA;
 const int CAMERA_JPEG_QUALITY = 15;
 const int STREAM_FRAME_DELAY_MS = 10;
 ```
 
-If the stream is still laggy:
+`FRAMESIZE_VGA` is `640x480`. If the stream becomes laggy again:
 
 1. Keep the ESP32-CAM close to the Wi-Fi router.
 2. Use the `/stream` page directly instead of keeping multiple browser tabs open.
 3. Make sure only one device is watching the stream.
-4. Lower the image size:
+4. Lower the image size to `320x240`:
 
    ```cpp
-   const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QQVGA;
+   const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QVGA;
    ```
 
 5. Lower JPEG quality to make smaller frames:
@@ -110,10 +110,9 @@ If the stream is still laggy:
    const int CAMERA_JPEG_QUALITY = 18;
    ```
 
-If the stream is smooth and you want better image quality, try:
+If the stream is smooth and you want even better image quality, try:
 
 ```cpp
-const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_VGA;
 const int CAMERA_JPEG_QUALITY = 12;
 ```
 

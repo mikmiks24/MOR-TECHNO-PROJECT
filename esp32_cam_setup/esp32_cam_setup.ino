@@ -6,8 +6,8 @@
 const char *WIFI_SSID = "YOUR_WIFI_NAME";
 const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
-// Low-latency defaults. Increase frame size only if your Wi-Fi is strong.
-const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QVGA;  // 320x240
+// Balanced defaults. Lower frame size if your Wi-Fi is laggy.
+const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_VGA;   // 640x480
 const int CAMERA_JPEG_QUALITY = 15;                    // 10 = sharper/larger, 20 = faster/smaller
 const int STREAM_FRAME_DELAY_MS = 10;                  // Small delay keeps the stream responsive
 

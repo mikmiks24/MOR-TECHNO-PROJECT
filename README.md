@@ -55,7 +55,7 @@ The sketch connects the ESP32-CAM to Wi-Fi, starts a small web server, and provi
 - `/` - test page
 - `/capture` - single JPEG snapshot
 - `/stream` - live MJPEG stream
-- `/analyze` - capture one image and ask Gemini to identify objects
+- `/info` - device and station information for backend traceability
 - `/flash/on` and `/flash/off` - onboard flash LED control
 
 ### Requirements
@@ -113,10 +113,11 @@ Use these common settings:
    const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
    ```
 
-3. Optional: add a Gemini API key if you want object analysis:
+3. Optional: update device labels for traceability:
 
    ```cpp
-   const char *GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
+   const char *DEVICE_ID = "ESP32-CAM-01";
+   const char *STATION_ID = "Station 1";
    ```
 
 4. Connect `IO0` to `GND`.
@@ -134,43 +135,39 @@ http://192.168.1.50
 
 Make sure your computer or phone is connected to the same Wi-Fi network as the ESP32-CAM.
 
-### Gemini object analyzer
+### Backend Gemini object analyzer
 
-The `/analyze` route captures one still image and sends it to the Gemini API for object identification.
+Gemini object analysis runs in the backend, not on the ESP32-CAM. The ESP32-CAM only provides the image through:
 
-Configure these values near the top of `esp32_cam_setup.ino`:
-
-```cpp
-const char *GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
-const char *GEMINI_MODEL = "gemini-2.0-flash";
-const char *GEMINI_PROMPT =
-    "Identify the main objects visible in this ESP32-CAM image. "
-    "Return a short, clear bullet list and mention anything important or unusual.";
+```text
+http://YOUR_ESP32_IP/capture
 ```
 
-To use it:
+Keep these secrets in `backend/.env` only:
 
-1. Get a Gemini API key from Google AI Studio.
-2. Paste the key into `GEMINI_API_KEY`.
-3. Upload the sketch again.
-4. Open the ESP32-CAM IP address in your browser.
-5. Click **Analyze objects with Gemini** or open:
-
-   ```text
-   http://YOUR_ESP32_IP/analyze
-   ```
-
-Close the live `/stream` page before running `/analyze`. The ESP32-CAM web server handles one long stream at a time, so an open stream can block analysis requests.
-
-For reliability, Gemini analysis uses a smaller still image than the live stream:
-
-```cpp
-const framesize_t GEMINI_ANALYSIS_FRAME_SIZE = FRAMESIZE_QVGA;
+```env
+GEMINI_API_KEY=your-real-gemini-api-key
+SUPABASE_DB_URL=your-supabase-postgres-url
+ESP32_CAPTURE_URL=http://YOUR_ESP32_IP/capture
 ```
 
-If Gemini misses details, try `FRAMESIZE_VGA`. If the ESP32 runs out of memory or the request fails, use `FRAMESIZE_QVGA`.
+Use this backend route to analyze the camera image:
 
-Do not commit a real Gemini API key to a public repository.
+```text
+POST http://localhost:8000/api/visual/analyze-from-camera
+```
+
+Example request body:
+
+```json
+{
+  "capture_url": "http://YOUR_ESP32_IP/capture",
+  "serial_number": "PAX-007-2026",
+  "station_id": "Station 1"
+}
+```
+
+Do not put Gemini keys, Supabase database URLs, or Supabase service keys in Arduino code.
 
 ### Adjust video size and lag
 

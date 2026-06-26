@@ -225,7 +225,9 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "gemini_configured": bool(settings.gemini_api_key),
+        "database_backend": settings.database_backend,
         "database": str(settings.database_path),
+        "supabase_configured": bool(settings.supabase_db_url),
     }
 
 

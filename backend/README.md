@@ -18,7 +18,7 @@ ESP32-CAM / RFID workstation
   -> sends terminal, staff, and image data
 
 FastAPI backend
-  -> stores workflow records in SQLite
+  -> stores workflow records in Supabase/Postgres or local SQLite
   -> calls Gemini with the backend API key
   -> returns dashboard and analysis results
 
@@ -30,25 +30,55 @@ Keep the Gemini API key on the backend. Do not store a real API key inside Ardui
 
 ## Setup
 
+### Recommended: Supabase database
+
 ```bash
 cd backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
+Create a Supabase project, then open **SQL Editor** and run:
+
+```text
+backend/supabase/schema.sql
+```
+
+In Supabase, copy your project database connection string:
+
+1. Open **Project Settings**.
+2. Go to **Database**.
+3. Copy a Postgres connection string or pooler connection string.
+4. Use the password you set for the Supabase database.
+
 Edit `.env`:
 
 ```env
+DATABASE_BACKEND=supabase
+SUPABASE_DB_URL=postgresql://postgres.PROJECT_REF:YOUR_DB_PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres?sslmode=require
 GEMINI_API_KEY=your-real-gemini-api-key
 ESP32_CAPTURE_URL=http://YOUR_ESP32_IP/capture
 ```
 
+Use the backend server as the only code that connects to Supabase. Do not put the Supabase database password, service role key, or Gemini API key in Arduino code or frontend JavaScript.
+
+### Local-only fallback: SQLite
+
+For quick local testing without Supabase, keep:
+
+```env
+DATABASE_BACKEND=sqlite
+SUPABASE_DB_URL=
+```
+
+The SQLite database is created automatically at `backend/data/tms.db`.
+
 Run the backend:
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Open:
@@ -57,7 +87,13 @@ Open:
 http://localhost:8000/docs
 ```
 
-The SQLite database is created automatically at `backend/data/tms.db`.
+Check the active database mode:
+
+```text
+http://localhost:8000/api/health
+```
+
+The response includes `database_backend` and `supabase_configured`.
 
 ## Main API routes
 

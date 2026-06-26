@@ -8,7 +8,7 @@ The backend for the paper's **IoT-Based Internal Workflow Traceability System wi
 
 It provides a FastAPI server with:
 
-- SQLite workflow database
+- Supabase/Postgres workflow database with SQLite fallback
 - RFID staff verification endpoint
 - receive and release log APIs
 - staff assignment API
@@ -24,7 +24,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Then open:
@@ -36,11 +36,13 @@ http://localhost:8000/docs
 Put the real Gemini key in `backend/.env`, not in Arduino code or frontend JavaScript:
 
 ```env
+DATABASE_BACKEND=supabase
+SUPABASE_DB_URL=postgresql://postgres.PROJECT_REF:YOUR_DB_PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres?sslmode=require
 GEMINI_API_KEY=your-real-gemini-api-key
 ESP32_CAPTURE_URL=http://YOUR_ESP32_IP/capture
 ```
 
-See `backend/README.md` for the full API route list and frontend integration notes.
+Run `backend/supabase/schema.sql` in Supabase SQL Editor before using Supabase mode. See `backend/README.md` for the full Supabase setup, API route list, and frontend integration notes.
 
 ## ESP32-CAM setup code
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from .config import settings
@@ -17,7 +17,136 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-def get_connection() -> sqlite3.Connection:
+class DictRow:
+    def __init__(self, data: dict[str, Any]):
+        self.data = data
+        self.values = list(data.values())
+
+    def __getitem__(self, key: str | int) -> Any:
+        if isinstance(key, int):
+            return self.values[key]
+        return self.data[key]
+
+    def keys(self):
+        return self.data.keys()
+
+
+class CursorAdapter:
+    def __init__(self, cursor, lastrowid: int | None = None):
+        self.cursor = cursor
+        self.lastrowid = lastrowid
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return DictRow(row)
+        return row
+
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        return [DictRow(row) if isinstance(row, dict) else row for row in rows]
+
+
+class PostgresConnectionAdapter:
+    def __init__(self):
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as error:
+            raise RuntimeError(
+                "psycopg is required for Supabase/Postgres. Run: pip install -r backend/requirements.txt"
+            ) from error
+
+        self.connection = psycopg.connect(settings.supabase_db_url, row_factory=dict_row)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type:
+            self.connection.rollback()
+        else:
+            self.connection.commit()
+        self.close()
+
+    def execute(self, query: str, params: tuple[Any, ...] = ()):
+        translated_query = self._translate_query(query)
+        cursor = self.connection.cursor()
+        cursor.execute(translated_query, params)
+
+        lastrowid = None
+        if translated_query.rstrip().upper().endswith("RETURNING ID"):
+            returned = cursor.fetchone()
+            if returned:
+                lastrowid = returned["id"]
+
+        return CursorAdapter(cursor, lastrowid=lastrowid)
+
+    def executemany(self, query: str, params: list[tuple[Any, ...]]):
+        translated_query = self._translate_query(query, add_returning=False)
+        cursor = self.connection.cursor()
+        cursor.executemany(translated_query, params)
+        return CursorAdapter(cursor)
+
+    def executescript(self, script: str) -> None:
+        statements = [statement.strip() for statement in script.split(";") if statement.strip()]
+        with self.connection.cursor() as cursor:
+            for statement in statements:
+                cursor.execute(statement)
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def rollback(self) -> None:
+        self.connection.rollback()
+
+    def close(self) -> None:
+        self.connection.close()
+
+    def _translate_query(self, query: str, *, add_returning: bool = True) -> str:
+        translated = query.strip()
+        translated = translated.replace("?", "%s")
+        translated = translated.replace("active = 1", "active = true")
+        translated = translated.replace("datetime(created_at)", "created_at")
+        translated = translated.replace("datetime(updated_at)", "updated_at")
+        translated = translated.replace("datetime(received_at)", "received_at")
+        translated = translated.replace("datetime(released_at)", "released_at")
+        translated = translated.replace("datetime(inspected_at)", "inspected_at")
+
+        if add_returning and self._needs_returning_id(translated):
+            translated = f"{translated} RETURNING id"
+
+        return translated
+
+    def _needs_returning_id(self, query: str) -> bool:
+        if "RETURNING" in query.upper():
+            return False
+
+        match = re.match(r"INSERT\s+INTO\s+([a-z_]+)", query, re.IGNORECASE)
+        if not match:
+            return False
+
+        return match.group(1).lower() in {
+            "employees",
+            "receive_logs",
+            "release_logs",
+            "assignments",
+            "inspection_records",
+            "visual_analyses",
+            "events",
+        }
+
+
+def use_supabase() -> bool:
+    return settings.database_backend.lower() == "supabase" and bool(settings.supabase_db_url)
+
+
+def get_connection():
+    if use_supabase():
+        return PostgresConnectionAdapter()
+
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(settings.database_path)
     connection.row_factory = sqlite3.Row
@@ -25,13 +154,17 @@ def get_connection() -> sqlite3.Connection:
     return connection
 
 
-def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def row_to_dict(row: Any | None) -> dict[str, Any] | None:
     if row is None:
         return None
+    if isinstance(row, dict):
+        return row
+    if isinstance(row, DictRow):
+        return dict(row.data)
     return {key: row[key] for key in row.keys()}
 
 
-def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+def rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:
     return [row_to_dict(row) for row in rows if row is not None]
 
 
@@ -144,6 +277,116 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 
+POSTGRES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS employees (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'staff',
+    username TEXT UNIQUE,
+    password_hash TEXT,
+    rfid_uid TEXT UNIQUE,
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS terminals (
+    serial_number TEXT PRIMARY KEY,
+    terminal_model TEXT NOT NULL,
+    brand TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'In Queue',
+    current_station TEXT,
+    last_handled_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS receive_logs (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    serial_number TEXT NOT NULL REFERENCES terminals(serial_number)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    terminal_model TEXT NOT NULL,
+    brand TEXT NOT NULL,
+    received_by TEXT NOT NULL,
+    source TEXT,
+    station_id TEXT,
+    status TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS release_logs (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    serial_number TEXT NOT NULL REFERENCES terminals(serial_number)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    terminal_model TEXT NOT NULL,
+    brand TEXT NOT NULL,
+    released_by TEXT NOT NULL,
+    destination TEXT,
+    status TEXT NOT NULL,
+    released_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS assignments (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    serial_number TEXT NOT NULL REFERENCES terminals(serial_number)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    terminal_model TEXT NOT NULL,
+    brand TEXT NOT NULL,
+    assigned_staff TEXT NOT NULL,
+    task_name TEXT NOT NULL,
+    started_at TEXT,
+    ended_at TEXT,
+    flagged_conditions TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inspection_records (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    serial_number TEXT NOT NULL REFERENCES terminals(serial_number)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    terminal_model TEXT NOT NULL,
+    brand TEXT NOT NULL,
+    inspection_task TEXT NOT NULL,
+    inspected_by TEXT NOT NULL,
+    remarks TEXT NOT NULL,
+    inspected_at TEXT NOT NULL,
+    evidence_path TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS visual_analyses (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    serial_number TEXT,
+    station_id TEXT,
+    source TEXT NOT NULL,
+    image_path TEXT,
+    model TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    result_text TEXT NOT NULL,
+    result_json TEXT,
+    recommended_status TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    actor TEXT,
+    serial_number TEXT,
+    station_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_receive_logs_received_at ON receive_logs(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_release_logs_released_at ON release_logs(released_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_visual_analyses_created_at ON visual_analyses(created_at DESC);
+"""
+
+
 SEED_TERMINALS = [
     ("ING-002-2024", "iCT220", "Ingenico", "In Queue", "Receiving", "Juan dela Cruz"),
     ("VFN-003-2024", "VX680", "Verifone", "Inspecting", "Inspection", "Ana Reyes"),
@@ -159,7 +402,7 @@ SEED_TERMINALS = [
 
 def initialize_database() -> None:
     with get_connection() as connection:
-        connection.executescript(SCHEMA)
+        connection.executescript(POSTGRES_SCHEMA if use_supabase() else SCHEMA)
         seed_database(connection)
 
 

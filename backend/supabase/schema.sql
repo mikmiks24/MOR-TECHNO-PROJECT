@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS visual_analyses (
     serial_number TEXT,
     station_id TEXT,
     source TEXT NOT NULL,
+    -- Local fallback path or Supabase Storage public URL/object path.
     image_path TEXT,
     model TEXT NOT NULL,
     prompt TEXT NOT NULL,

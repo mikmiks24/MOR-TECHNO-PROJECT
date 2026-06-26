@@ -58,11 +58,50 @@ Edit `.env`:
 ```env
 DATABASE_BACKEND=supabase
 SUPABASE_DB_URL=postgresql://postgres.PROJECT_REF:YOUR_DB_PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres?sslmode=require
+SUPABASE_URL=https://PROJECT_REF.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_STORAGE_BUCKET=evidence
+SUPABASE_STORAGE_PUBLIC=true
 GEMINI_API_KEY=your-real-gemini-api-key
 ESP32_CAPTURE_URL=http://YOUR_ESP32_IP/capture
 ```
 
 Use the backend server as the only code that connects to Supabase. Do not put the Supabase database password, service role key, or Gemini API key in Arduino code or frontend JavaScript.
+
+### Supabase Storage for evidence images
+
+To store actual captured images in Supabase:
+
+1. In Supabase, open **Storage**.
+2. Click **New bucket**.
+3. Use this bucket name:
+
+   ```text
+   evidence
+   ```
+
+4. For easier frontend viewing during prototype demos, make the bucket **Public**.
+5. In **Project Settings > API**, copy the project URL into:
+
+   ```env
+   SUPABASE_URL=https://PROJECT_REF.supabase.co
+   ```
+
+6. In **Project Settings > API**, copy the **service_role** key into:
+
+   ```env
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+   ```
+
+The backend uploads each captured image to:
+
+```text
+evidence/visual-analyses/YYYY-MM-DD/<generated-id>.jpg
+```
+
+The resulting public image URL is saved in the `visual_analyses.image_path` field.
+
+If `SUPABASE_URL` or `SUPABASE_SERVICE_ROLE_KEY` is empty, the backend falls back to local storage in `backend/data/evidence`.
 
 ### Local-only fallback: SQLite
 

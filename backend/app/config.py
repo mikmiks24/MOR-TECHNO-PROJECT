@@ -23,6 +23,10 @@ def backend_path(env_name: str, default: Path) -> Path:
 
 class Settings:
     app_name: str = "TMS Traceability Backend"
+    supabase_url: str = os.getenv("SUPABASE_URL", "")
+    supabase_service_role_key: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    supabase_storage_bucket: str = os.getenv("SUPABASE_STORAGE_BUCKET", "evidence")
+    supabase_storage_public: bool = os.getenv("SUPABASE_STORAGE_PUBLIC", "true").lower() == "true"
     supabase_db_url: str = os.getenv("SUPABASE_DB_URL", "")
     database_backend: str = os.getenv("DATABASE_BACKEND", "supabase" if os.getenv("SUPABASE_DB_URL") else "sqlite")
     database_path: Path = backend_path("TMS_DATABASE_PATH", BASE_DIR / "data" / "tms.db")

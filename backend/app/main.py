@@ -144,6 +144,17 @@ def filter_rows(rows: list[dict[str, Any]], query: str | None) -> list[dict[str,
     return [row for row in rows if needle in json.dumps(row, default=str).lower()]
 
 
+def normalize_supabase_url(url: str) -> str:
+    normalized = url.strip().rstrip("/")
+    if normalized.endswith("/rest/v1"):
+        normalized = normalized[: -len("/rest/v1")]
+    return normalized.rstrip("/")
+
+
+def supabase_storage_enabled() -> bool:
+    return bool(settings.supabase_url and settings.supabase_service_role_key and settings.supabase_storage_bucket)
+
+
 def save_evidence(image_bytes: bytes, extension: str = ".jpg") -> str:
     settings.evidence_dir.mkdir(parents=True, exist_ok=True)
     safe_extension = extension if extension.startswith(".") else f".{extension}"
@@ -151,6 +162,57 @@ def save_evidence(image_bytes: bytes, extension: str = ".jpg") -> str:
     path = settings.evidence_dir / filename
     path.write_bytes(image_bytes)
     return str(path)
+
+
+async def upload_evidence_to_supabase_storage(
+    image_bytes: bytes,
+    *,
+    extension: str,
+    mime_type: str,
+) -> str:
+    safe_extension = extension if extension.startswith(".") else f".{extension}"
+    object_path = f"visual-analyses/{utc_now()[:10]}/{uuid.uuid4().hex}{safe_extension}"
+    base_url = normalize_supabase_url(settings.supabase_url)
+    upload_url = f"{base_url}/storage/v1/object/{settings.supabase_storage_bucket}/{object_path}"
+
+    headers = {
+        "apikey": settings.supabase_service_role_key,
+        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+        "Content-Type": mime_type,
+        "x-upsert": "false",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(upload_url, content=image_bytes, headers=headers)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Supabase Storage upload failed. Check SUPABASE_URL, "
+                "SUPABASE_SERVICE_ROLE_KEY, bucket name, and bucket policies. "
+                f"Supabase returned HTTP {error.response.status_code}: {error.response.text}"
+            ),
+        ) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail=f"Supabase Storage upload failed: {error}") from error
+
+    if settings.supabase_storage_public:
+        return f"{base_url}/storage/v1/object/public/{settings.supabase_storage_bucket}/{object_path}"
+
+    return f"supabase://{settings.supabase_storage_bucket}/{object_path}"
+
+
+async def store_evidence(image_bytes: bytes, *, extension: str, mime_type: str) -> str:
+    if supabase_storage_enabled():
+        return await upload_evidence_to_supabase_storage(
+            image_bytes,
+            extension=extension,
+            mime_type=mime_type,
+        )
+
+    return save_evidence(image_bytes, extension)
 
 
 def recommended_status(parsed_result: dict[str, Any] | None) -> str | None:
@@ -204,7 +266,7 @@ async def run_visual_analysis(
     connection,
 ) -> VisualAnalysisResponse:
     extension = ".jpg" if "jpeg" in mime_type or "jpg" in mime_type else ".png"
-    image_path = save_evidence(image_bytes, extension)
+    image_path = await store_evidence(image_bytes, extension=extension, mime_type=mime_type)
 
     try:
         result_text, parsed_result = await analyze_image(
@@ -326,6 +388,8 @@ def health() -> dict[str, Any]:
         "database_backend": settings.database_backend,
         "database": str(settings.database_path),
         "supabase_configured": bool(settings.supabase_db_url),
+        "supabase_storage_configured": supabase_storage_enabled(),
+        "supabase_storage_bucket": settings.supabase_storage_bucket,
     }
 
 

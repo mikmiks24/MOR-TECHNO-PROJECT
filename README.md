@@ -38,11 +38,15 @@ Put the real Gemini key in `backend/.env`, not in Arduino code or frontend JavaS
 ```env
 DATABASE_BACKEND=supabase
 SUPABASE_DB_URL=postgresql://postgres.PROJECT_REF:YOUR_DB_PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres?sslmode=require
+SUPABASE_URL=https://PROJECT_REF.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_STORAGE_BUCKET=evidence
+SUPABASE_STORAGE_PUBLIC=true
 GEMINI_API_KEY=your-real-gemini-api-key
 ESP32_CAPTURE_URL=http://YOUR_ESP32_IP/capture
 ```
 
-Run `backend/supabase/schema.sql` in Supabase SQL Editor before using Supabase mode. See `backend/README.md` for the full Supabase setup, API route list, and frontend integration notes.
+Run `backend/supabase/schema.sql` in Supabase SQL Editor before using Supabase mode. Create a Supabase Storage bucket named `evidence` if you want captured images stored in Supabase Storage. See `backend/README.md` for the full Supabase setup, API route list, and frontend integration notes.
 
 ## ESP32-CAM setup code
 

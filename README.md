@@ -83,6 +83,42 @@ http://192.168.1.50
 
 Make sure your computer or phone is connected to the same Wi-Fi network as the ESP32-CAM.
 
+### Reduce video lag
+
+The sketch is tuned for lower latency by default:
+
+```cpp
+const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QVGA;
+const int CAMERA_JPEG_QUALITY = 15;
+const int STREAM_FRAME_DELAY_MS = 10;
+```
+
+If the stream is still laggy:
+
+1. Keep the ESP32-CAM close to the Wi-Fi router.
+2. Use the `/stream` page directly instead of keeping multiple browser tabs open.
+3. Make sure only one device is watching the stream.
+4. Lower the image size:
+
+   ```cpp
+   const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QQVGA;
+   ```
+
+5. Lower JPEG quality to make smaller frames:
+
+   ```cpp
+   const int CAMERA_JPEG_QUALITY = 18;
+   ```
+
+If the stream is smooth and you want better image quality, try:
+
+```cpp
+const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_VGA;
+const int CAMERA_JPEG_QUALITY = 12;
+```
+
+Higher resolution needs stronger Wi-Fi and may add delay.
+
 ### Fix upload error: `A serial exception error occurred: Write timeout`
 
 This error happens before the code starts running. It usually means the computer cannot reliably talk to the ESP32-CAM over the USB-to-Serial adapter.

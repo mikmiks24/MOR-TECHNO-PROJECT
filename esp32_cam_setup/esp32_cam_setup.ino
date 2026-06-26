@@ -6,6 +6,11 @@
 const char *WIFI_SSID = "YOUR_WIFI_NAME";
 const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
+// Low-latency defaults. Increase frame size only if your Wi-Fi is strong.
+const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_QVGA;  // 320x240
+const int CAMERA_JPEG_QUALITY = 15;                    // 10 = sharper/larger, 20 = faster/smaller
+const int STREAM_FRAME_DELAY_MS = 10;                  // Small delay keeps the stream responsive
+
 // AI Thinker ESP32-CAM pin map.
 #define PWDN_GPIO_NUM 32
 #define RESET_GPIO_NUM -1
@@ -58,6 +63,7 @@ void handleCapture() {
   }
 
   WiFiClient client = server.client();
+  client.setNoDelay(true);
   client.print(
       "HTTP/1.1 200 OK\r\n"
       "Content-Type: image/jpeg\r\n"
@@ -72,6 +78,7 @@ void handleCapture() {
 
 void handleStream() {
   WiFiClient client = server.client();
+  client.setNoDelay(true);
 
   client.print(
       "HTTP/1.1 200 OK\r\n"
@@ -99,7 +106,7 @@ void handleStream() {
     if (!client.connected()) {
       break;
     }
-    delay(50);
+    delay(STREAM_FRAME_DELAY_MS);
   }
 }
 
@@ -146,19 +153,17 @@ void setupCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_LATEST;
 
-  if (psramFound()) {
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 10;
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-  }
+  config.frame_size = CAMERA_FRAME_SIZE;
+  config.jpeg_quality = CAMERA_JPEG_QUALITY;
+  config.fb_count = psramFound() ? 2 : 1;
 
   Serial.println("Initializing camera...");
   Serial.print("PSRAM found: ");
   Serial.println(psramFound() ? "yes" : "no");
+  Serial.print("Camera frame size: ");
+  Serial.println(static_cast<int>(CAMERA_FRAME_SIZE));
+  Serial.print("JPEG quality: ");
+  Serial.println(CAMERA_JPEG_QUALITY);
 
   esp_err_t error = esp_camera_init(&config);
   if (error != ESP_OK) {

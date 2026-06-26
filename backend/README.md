@@ -149,6 +149,22 @@ The response includes `database_backend` and `supabase_configured`.
 | --- | --- | --- |
 | POST | `/api/auth/login` | Basic dashboard login for prototype use |
 | POST | `/api/rfid/verify` | Verify staff RFID UID from the workstation |
+| GET/POST | `/api/employees` | List/register employees and RFID UIDs |
+
+RFID verification checks `employees.rfid_uid`. Each tap is logged in `events` as `rfid_verified` or `rfid_denied`.
+
+Prototype employee/RFID registration:
+
+```bash
+curl -X POST http://localhost:8000/api/employees \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Ana Reyes",
+    "username": "ana",
+    "role": "staff",
+    "rfid_uid": "A1B2C3D4"
+  }'
+```
 
 ### Workflow records
 

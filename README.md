@@ -48,6 +48,56 @@ ESP32_CAPTURE_URL=http://YOUR_ESP32_IP/capture
 
 Run `backend/supabase/schema.sql` in Supabase SQL Editor before using Supabase mode. Create a Supabase Storage bucket named `evidence` if you want captured images stored in Supabase Storage. See `backend/README.md` for the full Supabase setup, API route list, and frontend integration notes.
 
+## ESP32 main controller RFID firmware
+
+The main controller firmware for the RFID reader and future TFT menu is in:
+
+- `esp32_main_controller/esp32_main_controller.ino`
+
+Install the **MFRC522** Arduino library before compiling this sketch.
+
+It connects to Wi-Fi and sends RFID taps to the backend:
+
+```text
+POST /api/rfid/verify
+```
+
+If `REGISTER_UNKNOWN_CARDS` is enabled, it can enroll a new RFID card through Serial Monitor by sending:
+
+```text
+POST /api/employees
+```
+
+Backend storage:
+
+- `employees` table: registered staff and RFID UID master list
+- `events` table: RFID verified/denied/registered audit trail
+
+Configure these values before uploading:
+
+```cpp
+const char *WIFI_SSID = "YOUR_WIFI_NAME";
+const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char *BACKEND_URL = "http://YOUR_LAPTOP_IP:8000";
+const char *STATION_ID = "Station 1";
+```
+
+Use your laptop Wi-Fi IP for `BACKEND_URL`. Do not use `localhost` on ESP32.
+
+MFRC522 default wiring in the sketch:
+
+| MFRC522 pin | ESP32 pin |
+| --- | --- |
+| SDA / SS | GPIO 21 |
+| RST | GPIO 22 |
+| SCK | GPIO 18 |
+| MISO | GPIO 19 |
+| MOSI | GPIO 23 |
+| 3.3V | 3.3V |
+| GND | GND |
+
+The TFT display will be controlled by this same main controller later. The firmware already marks where to show "Access Granted" and the task menu after RFID verification.
+
 ## ESP32-CAM setup code
 
 This repository includes an Arduino sketch for an AI Thinker ESP32-CAM module:

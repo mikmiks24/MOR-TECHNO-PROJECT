@@ -15,6 +15,15 @@ class RfidVerifyRequest(BaseModel):
     station_id: str | None = None
 
 
+class EmployeeCreate(BaseModel):
+    name: str = Field(min_length=1)
+    rfid_uid: str = Field(min_length=1)
+    role: str = "staff"
+    username: str | None = None
+    password: str | None = None
+    active: bool = True
+
+
 class ReceiveLogCreate(BaseModel):
     serial_number: str = Field(min_length=1)
     terminal_model: str = Field(min_length=1)

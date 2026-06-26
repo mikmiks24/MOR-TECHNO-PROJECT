@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,10 +28,24 @@ from .schemas import (
     ReleaseLogCreate,
     RfidVerifyRequest,
     VisualAnalysisResponse,
+    VisualMonitorStartRequest,
 )
 
 
 app = FastAPI(title=settings.app_name)
+
+visual_monitor_state: dict[str, Any] = {
+    "running": False,
+    "task": None,
+    "started_at": None,
+    "stopped_at": None,
+    "last_run_at": None,
+    "last_success_at": None,
+    "last_error": None,
+    "cycles_completed": 0,
+    "last_analysis_id": None,
+    "config": None,
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,6 +60,18 @@ app.add_middleware(
 def startup() -> None:
     initialize_database()
     settings.evidence_dir.mkdir(parents=True, exist_ok=True)
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    task = visual_monitor_state.get("task")
+    visual_monitor_state["running"] = False
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def get_db():
@@ -136,6 +162,37 @@ def recommended_status(parsed_result: dict[str, Any] | None) -> str | None:
     return None
 
 
+def visual_monitor_status() -> dict[str, Any]:
+    task = visual_monitor_state.get("task")
+    return {
+        "running": visual_monitor_state["running"],
+        "started_at": visual_monitor_state["started_at"],
+        "stopped_at": visual_monitor_state["stopped_at"],
+        "last_run_at": visual_monitor_state["last_run_at"],
+        "last_success_at": visual_monitor_state["last_success_at"],
+        "last_error": visual_monitor_state["last_error"],
+        "cycles_completed": visual_monitor_state["cycles_completed"],
+        "last_analysis_id": visual_monitor_state["last_analysis_id"],
+        "config": visual_monitor_state["config"],
+        "task_done": task.done() if task else True,
+    }
+
+
+async def fetch_camera_image(capture_url: str) -> tuple[bytes, str]:
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(capture_url)
+            response.raise_for_status()
+    except httpx.HTTPError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not fetch image from ESP32-CAM capture URL: {error}",
+        ) from error
+
+    mime_type = response.headers.get("content-type", "image/jpeg").split(";")[0]
+    return response.content, mime_type
+
+
 async def run_visual_analysis(
     *,
     image_bytes: bytes,
@@ -209,6 +266,47 @@ async def run_visual_analysis(
         serial_number=serial_number,
         station_id=station_id,
     )
+
+
+async def visual_monitor_loop(config: VisualMonitorStartRequest) -> None:
+    capture_url = config.capture_url or settings.esp32_capture_url
+    max_cycles = config.max_cycles
+
+    try:
+        while visual_monitor_state["running"]:
+            visual_monitor_state["last_run_at"] = utc_now()
+
+            try:
+                image_bytes, mime_type = await fetch_camera_image(capture_url)
+                connection = get_connection()
+                try:
+                    result = await run_visual_analysis(
+                        image_bytes=image_bytes,
+                        mime_type=mime_type,
+                        source="esp32-cam-auto",
+                        serial_number=config.serial_number,
+                        station_id=config.station_id,
+                        prompt=config.prompt,
+                        connection=connection,
+                    )
+                finally:
+                    connection.close()
+
+                visual_monitor_state["last_success_at"] = utc_now()
+                visual_monitor_state["last_error"] = None
+                visual_monitor_state["last_analysis_id"] = result.id
+            except Exception as error:  # Keep the monitor alive after transient camera/network failures.
+                visual_monitor_state["last_error"] = str(error)
+
+            visual_monitor_state["cycles_completed"] += 1
+            if max_cycles and visual_monitor_state["cycles_completed"] >= max_cycles:
+                break
+
+            await asyncio.sleep(config.interval_seconds)
+    finally:
+        visual_monitor_state["running"] = False
+        visual_monitor_state["task"] = None
+        visual_monitor_state["stopped_at"] = utc_now()
 
 
 @app.get("/")
@@ -663,19 +761,9 @@ async def analyze_from_camera(
 ) -> VisualAnalysisResponse:
     capture_url = payload.capture_url or settings.esp32_capture_url
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(capture_url)
-            response.raise_for_status()
-    except httpx.HTTPError as error:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Could not fetch image from ESP32-CAM capture URL: {error}",
-        ) from error
-
-    mime_type = response.headers.get("content-type", "image/jpeg").split(";")[0]
+    image_bytes, mime_type = await fetch_camera_image(capture_url)
     return await run_visual_analysis(
-        image_bytes=response.content,
+        image_bytes=image_bytes,
         mime_type=mime_type,
         source="esp32-cam",
         serial_number=payload.serial_number,
@@ -683,3 +771,47 @@ async def analyze_from_camera(
         prompt=payload.prompt,
         connection=connection,
     )
+
+
+@app.post("/api/visual/monitor/start")
+async def start_visual_monitor(payload: VisualMonitorStartRequest) -> dict[str, Any]:
+    if visual_monitor_state["running"]:
+        raise HTTPException(status_code=409, detail="Visual monitor is already running")
+
+    visual_monitor_state.update(
+        {
+            "running": True,
+            "started_at": utc_now(),
+            "stopped_at": None,
+            "last_run_at": None,
+            "last_success_at": None,
+            "last_error": None,
+            "cycles_completed": 0,
+            "last_analysis_id": None,
+            "config": payload.model_dump(),
+        }
+    )
+    visual_monitor_state["task"] = asyncio.create_task(visual_monitor_loop(payload))
+    return visual_monitor_status()
+
+
+@app.post("/api/visual/monitor/stop")
+async def stop_visual_monitor() -> dict[str, Any]:
+    task = visual_monitor_state.get("task")
+    visual_monitor_state["running"] = False
+
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    visual_monitor_state["task"] = None
+    visual_monitor_state["stopped_at"] = visual_monitor_state["stopped_at"] or utc_now()
+    return visual_monitor_status()
+
+
+@app.get("/api/visual/monitor/status")
+def get_visual_monitor_status() -> dict[str, Any]:
+    return visual_monitor_status()

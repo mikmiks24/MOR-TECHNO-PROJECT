@@ -66,6 +66,15 @@ class AnalyzeFromCameraRequest(BaseModel):
     prompt: str | None = None
 
 
+class VisualMonitorStartRequest(BaseModel):
+    capture_url: str | None = None
+    serial_number: str | None = None
+    station_id: str | None = None
+    prompt: str | None = None
+    interval_seconds: int = Field(default=15, ge=5, le=3600)
+    max_cycles: int | None = Field(default=None, ge=1)
+
+
 class VisualAnalysisResponse(BaseModel):
     id: int | None = None
     status: str

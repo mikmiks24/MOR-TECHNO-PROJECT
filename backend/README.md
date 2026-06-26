@@ -154,6 +154,60 @@ The response includes:
 - recommended status such as `completed`, `defect`, `missing`, or `review`
 - saved evidence image path
 
+### Automatic capture monitor
+
+The ESP32-CAM is not connected to Gemini through the live stream. The backend uses the still-image endpoint:
+
+```text
+http://YOUR_ESP32_IP/capture
+```
+
+Use `/stream` only for human viewing in a browser. Use `/capture` for backend analysis and storage.
+
+To automatically capture and analyze every few seconds:
+
+```bash
+curl -X POST http://localhost:8000/api/visual/monitor/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capture_url": "http://YOUR_ESP32_IP/capture",
+    "serial_number": "PAX-007-2026",
+    "station_id": "Station 1",
+    "interval_seconds": 15
+  }'
+```
+
+The backend will:
+
+1. Fetch a JPEG from the ESP32-CAM `/capture` endpoint.
+2. Send the image to Gemini.
+3. Save the image evidence path and Gemini result in `visual_analyses`.
+4. Repeat until stopped.
+
+Check monitor status:
+
+```bash
+curl http://localhost:8000/api/visual/monitor/status
+```
+
+Stop automatic capture:
+
+```bash
+curl -X POST http://localhost:8000/api/visual/monitor/stop
+```
+
+For a short test run, use `max_cycles`:
+
+```json
+{
+  "capture_url": "http://YOUR_ESP32_IP/capture",
+  "serial_number": "PAX-007-2026",
+  "station_id": "Station 1",
+  "interval_seconds": 15,
+  "max_cycles": 3
+}
+```
+
 ## Frontend integration
 
 Your current frontend has hard-coded table rows and metric values. Replace those static values with calls to:
@@ -165,6 +219,7 @@ Your current frontend has hard-coded table rows and metric values. Replace those
 - `/api/history` for the terminal history view
 - `/api/inspection-records` for inspection history
 - `/api/visual/analyze-from-camera` for the Gemini analyzer button
+- `/api/visual/monitor/start`, `/status`, and `/stop` for automatic camera analysis
 
 Example:
 

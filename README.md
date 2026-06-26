@@ -167,6 +167,25 @@ Example request body:
 }
 ```
 
+For automatic capture and saving to Supabase, start the backend monitor:
+
+```text
+POST http://localhost:8000/api/visual/monitor/start
+```
+
+Example request body:
+
+```json
+{
+  "capture_url": "http://YOUR_ESP32_IP/capture",
+  "serial_number": "PAX-007-2026",
+  "station_id": "Station 1",
+  "interval_seconds": 15
+}
+```
+
+Use `/stream` only for viewing video in a browser. The backend uses `/capture` for AI analysis because each request returns one JPEG image that can be saved and sent to Gemini.
+
 Do not put Gemini keys, Supabase database URLs, or Supabase service keys in Arduino code.
 
 ### Adjust video size and lag

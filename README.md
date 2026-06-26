@@ -109,3 +109,32 @@ After a successful upload:
 1. Disconnect `IO0` from `GND`.
 2. Press reset.
 3. Open Serial Monitor at `115200` baud.
+
+### If Serial Monitor only shows boot text
+
+Output like this means the ESP32-CAM is booting from flash:
+
+```text
+rst:0x3 (SW_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+entry 0x400805b4
+```
+
+After those lines, this sketch should print:
+
+```text
+ESP32-CAM setup sketch starting...
+Initializing camera...
+Camera initialized
+Connecting to Wi-Fi...
+```
+
+If you only see the boot text and none of the sketch messages:
+
+1. Make sure Serial Monitor baud is `115200`.
+2. Press reset once after opening Serial Monitor.
+3. Confirm `IO0` is disconnected from `GND` after upload.
+4. Upload the latest sketch from this repository again.
+
+If it stops at `Initializing camera...`, check the camera ribbon cable, select **AI Thinker ESP32-CAM**, and use a stable 5V supply.
+
+If it keeps printing dots after `Connecting to Wi-Fi`, update `WIFI_SSID` and `WIFI_PASSWORD` in the sketch and make sure the ESP32-CAM can reach that Wi-Fi network.

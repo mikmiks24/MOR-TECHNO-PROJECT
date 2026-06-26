@@ -156,13 +156,21 @@ void setupCamera() {
     config.fb_count = 1;
   }
 
+  Serial.println("Initializing camera...");
+  Serial.print("PSRAM found: ");
+  Serial.println(psramFound() ? "yes" : "no");
+
   esp_err_t error = esp_camera_init(&config);
   if (error != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x\n", error);
+    Serial.println("Check the camera ribbon cable, board model, and 5V power supply.");
+    Serial.flush();
     while (true) {
       delay(1000);
     }
   }
+
+  Serial.println("Camera initialized");
 }
 
 void connectToWiFi() {
@@ -185,6 +193,11 @@ void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(false);
   delay(1000);
+
+  Serial.println();
+  Serial.println("ESP32-CAM setup sketch starting...");
+  Serial.print("Wi-Fi SSID: ");
+  Serial.println(WIFI_SSID);
 
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);

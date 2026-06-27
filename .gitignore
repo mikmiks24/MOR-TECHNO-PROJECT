@@ -5,3 +5,10 @@ backend/data/*.db-*
 backend/data/evidence/
 __pycache__/
 *.py[cod]
+
+# Python virtual environment (should never be committed)
+.venv/
+
+# Local secrets — keep Supabase keys out of git
+config.h
+config.js

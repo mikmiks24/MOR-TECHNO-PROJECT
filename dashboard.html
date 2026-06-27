@@ -2026,8 +2026,8 @@
           <svg id="themeIconMoon" viewBox="0 0 24 24" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           <span id="themeLabel">Dark</span>
         </button>
-        <div class="status-indicator">
-          <span class="status-dot"></span> Online
+        <div class="status-indicator" id="status-indicator">
+          <span class="status-dot"></span> <span id="data-source">Online</span>
         </div>
       </div>
     </header>
@@ -2458,6 +2458,8 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.min.js"></script>
+  <!-- Optional: copy config.example.js to config.js with your Supabase URL + anon key. -->
+  <script src="config.js"></script>
   <script>
     var PAGE_SIZE = 5;
     var dismissedIssues = new Set();
@@ -2469,6 +2471,150 @@
     };
     var bulkSelected = { receive: new Set(), release: new Set() };
     var pendingReassignId = null;
+
+    /* ===== SUPABASE LIVE DATA =====================================================
+       Reads the same staff / terminals / logs tables that the ESP32 firmware
+       (ECS_PostAdmin_v6.ino) writes via the Supabase REST API. Configure with
+       config.js (window.ECS_CONFIG). Falls back to demo data when unconfigured
+       or unreachable, so the UI always renders. ============================= */
+    var ECS_CFG = (typeof window !== "undefined" && window.ECS_CONFIG) ? window.ECS_CONFIG : {};
+    var SUPABASE_URL = String(ECS_CFG.SUPABASE_URL || "").replace(/\/+$/, "");
+    var SUPABASE_ANON_KEY = String(ECS_CFG.SUPABASE_ANON_KEY || "");
+
+    function supabaseConfigured() {
+      return SUPABASE_URL.length > 10 && SUPABASE_URL.indexOf("YOUR_PROJECT") < 0 &&
+             SUPABASE_ANON_KEY.length > 20 && SUPABASE_ANON_KEY.indexOf("YOUR_SUPABASE") < 0;
+    }
+
+    function sbRest(path) {
+      return fetch(SUPABASE_URL + "/rest/v1/" + path, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: "Bearer " + SUPABASE_ANON_KEY }
+      }).then(function (r) {
+        if (!r.ok) throw new Error("Supabase HTTP " + r.status);
+        return r.json();
+      });
+    }
+
+    function sbFmtTs(ts) {
+      if (!ts) return "—";
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts);
+      var p = function (n) { return String(n).padStart(2, "0"); };
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+        " " + p(d.getHours()) + ":" + p(d.getMinutes());
+    }
+
+    function sbRelTime(ts) {
+      if (!ts) return "";
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return "";
+      var s = Math.round((Date.now() - d.getTime()) / 1000);
+      if (s < 60) return "Just now";
+      if (s < 3600) return Math.floor(s / 60) + "m ago";
+      if (s < 86400) return Math.floor(s / 3600) + "h ago";
+      return Math.floor(s / 86400) + "d ago";
+    }
+
+    function sbPhotoFor(model) {
+      var m = String(model || "").toUpperCase();
+      if (m.indexOf("VX8") >= 0) return TERMINAL_PHOTOS.vx820;
+      if (m.indexOf("IWL") >= 0 || m.indexOf("ING") >= 0) return TERMINAL_PHOTOS.iwl;
+      return TERMINAL_PHOTOS.pax;
+    }
+
+    function sbBuild(logs, terminals, staff) {
+      var termById = {}; (terminals || []).forEach(function (t) { termById[t.terminal_id] = t; });
+      var staffById = {}; (staff || []).forEach(function (s) { staffById[s.staff_id] = s; });
+      var receives = [], releases = [], inspections = [], activity = [], traces = {}, perf = {};
+
+      (logs || []).forEach(function (row) {
+        var ai = row.ai_result || {};
+        var term = termById[row.terminal_id] || {};
+        var sName = ai.staff_name || (staffById[row.staff_id] || {}).name || row.staff_id || "Unknown";
+        var sRole = ai.staff_role || (staffById[row.staff_id] || {}).role || "Workstation";
+        var model = term.model || ai.model || "—";
+        var serial = row.terminal_id || "—";
+        var dur = Number(ai.duration_sec || 0);
+        var when = row["timestamp"] || ai.ended_at || row.created_at;
+        var dt = sbFmtTs(when);
+        var checked = (ai.items_checked != null && ai.items_total != null)
+          ? (ai.items_checked + "/" + ai.items_total) : "—";
+        var task = String(row.task || "").toLowerCase();
+
+        var flags = [], missing = false;
+        (ai.checklist || []).forEach(function (it) {
+          if (it && it.required && it.checked === false) { flags.push("Missing: " + (it.label || "item")); missing = true; }
+        });
+        var rmk = String(ai.remarks || "").trim();
+        var outcome = missing ? "missing" : (rmk ? "defect" : "completed");
+        if (!missing && rmk) flags.push(rmk);
+
+        if (task === "receive") {
+          var rStatus = term.status === "processing" ? "Inspecting" : (term.status === "in_queue" ? "In queue" : "Received");
+          receives.push({ awb: "—", serial: serial, model: model, staff: sName, bay: row.station || "Bay 1", duration: dur, datetime: dt, status: rStatus });
+        } else if (task === "release") {
+          releases.push({ serial: serial, model: model, staff: sName, bay: row.station || "Bay 1", duration: dur, destination: ai.destination || "—", datetime: dt, status: "Cleared" });
+        }
+
+        var procLabel = task === "receive" ? "Receiving" : (task === "release" ? "Releasing" : "Processing");
+        inspections.push({ serial: serial, model: model, process: procLabel, staff: sName, checked: checked, outcome: outcome, flags: flags, photo: row.photo_url || sbPhotoFor(model), datetime: dt });
+
+        var verb = task === "receive" ? "received" : (task === "release" ? "released" : "processed");
+        activity.push({ text: sName + " " + verb + " " + serial + (dur ? " in " + fmtDuration(dur) : ""), time: sbRelTime(when) });
+
+        (traces[serial] = traces[serial] || []).push({
+          time: dt,
+          event: task ? (task.charAt(0).toUpperCase() + task.slice(1)) : "Event",
+          detail: sName + (dur ? " · " + fmtDuration(dur) : "") + (flags.length ? " · " + flags.join(", ") : "")
+        });
+
+        var p = perf[sName] = perf[sName] || { name: sName, group: sRole, received: 0, released: 0, recvDur: [], relDur: [], defectsFlagged: 0 };
+        if (task === "release") { p.released++; if (dur) p.relDur.push(dur); }
+        else { p.received++; if (dur) p.recvDur.push(dur); }
+        if (missing || rmk) p.defectsFlagged++;
+      });
+
+      var avg = function (a) { return a.length ? Math.round(a.reduce(function (x, y) { return x + y; }, 0) / a.length) : null; };
+      var staffPerformance = Object.keys(perf).map(function (k) {
+        var p = perf[k];
+        return { name: p.name, group: p.group, received: p.received, released: p.released, avgReceive: avg(p.recvDur), avgRelease: avg(p.relDur), defectsFlagged: p.defectsFlagged };
+      });
+      var queue = (terminals || []).filter(function (t) { return t.status !== "released"; }).map(function (t) {
+        return { serial: t.terminal_id, model: t.model || "—", stage: t.status === "processing" ? "Processing" : "In queue", waitMin: 1 };
+      });
+
+      return { receives: receives, releases: releases, inspections: inspections, activity: activity, traces: traces, staffPerformance: staffPerformance, queue: queue };
+    }
+
+    function loadFromSupabase() {
+      return Promise.all([
+        sbRest("logs?select=*&order=created_at.desc&limit=200"),
+        sbRest("terminals?select=*"),
+        sbRest("staff?select=*")
+      ]).then(function (res) {
+        var built = sbBuild(res[0], res[1], res[2]);
+        DEMO.receives = built.receives;
+        DEMO.releases = built.releases;
+        DEMO.inspections = built.inspections;
+        DEMO.activity = built.activity.slice(0, 8);
+        DEMO.traces = built.traces;
+        if (built.staffPerformance.length) DEMO.staffPerformance = built.staffPerformance;
+        if (built.queue.length) DEMO.queue = built.queue;
+        var recv = DEMO.staffPerformance.map(function (s) { return s.avgReceive; }).filter(function (x) { return x != null; });
+        var rel = DEMO.staffPerformance.map(function (s) { return s.avgRelease; }).filter(function (x) { return x != null; });
+        if (recv.length) DEMO.kpi.avgReceive = Math.round(recv.reduce(function (a, b) { return a + b; }, 0) / recv.length);
+        if (rel.length) DEMO.kpi.avgRelease = Math.round(rel.reduce(function (a, b) { return a + b; }, 0) / rel.length);
+        return (res[0] || []).length > 0;
+      });
+    }
+
+    function updateDataSourceBadge(state) {
+      var el = document.getElementById("data-source");
+      if (!el) return;
+      if (state === "live") el.textContent = "Live · Supabase";
+      else if (state === "empty") el.textContent = "Live · Supabase (no records yet)";
+      else el.textContent = "Demo data";
+    }
 
     function terminalPhotoSvg(title, subtitle) {
       var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320">' +
@@ -3065,6 +3211,7 @@
 
     var volumeEl = document.getElementById("volumeChart");
     if (volumeEl) {
+      if (chartInstances.volume) chartInstances.volume.destroy();
       chartInstances.volume = new Chart(volumeEl.getContext("2d"), {
         type: "bar",
         data: {
@@ -3094,6 +3241,7 @@
     }
     var anomalyEl = document.getElementById("anomalyChart");
     if (anomalyEl) {
+      if (chartInstances.anomaly) chartInstances.anomaly.destroy();
       chartInstances.anomaly = new Chart(anomalyEl.getContext("2d"), {
         type: "doughnut",
         data: {
@@ -3517,13 +3665,31 @@
 
       var dashSk = document.getElementById("dash-skeleton");
       if (dashSk) dashSk.classList.add("show");
-      setTimeout(function () {
+
+      function renderAllViews() {
         renderDashboard();
         renderReceiveTable();
         renderReleaseTable();
         renderPerformanceTable();
         renderInspectionTable();
         renderHistoryTables();
+        try { initCharts(); } catch (err) { console.warn("Charts skipped:", err); }
+      }
+
+      setTimeout(function () {
+        if (!supabaseConfigured()) {
+          renderAllViews();
+          updateDataSourceBadge("demo");
+          return;
+        }
+        loadFromSupabase().then(function (hasRows) {
+          renderAllViews();
+          updateDataSourceBadge(hasRows ? "live" : "empty");
+        }).catch(function (err) {
+          console.warn("Supabase unreachable, using demo data:", err);
+          renderAllViews();
+          updateDataSourceBadge("demo");
+        });
       }, 380);
 
       var loginBtn = document.getElementById("loginBtn");

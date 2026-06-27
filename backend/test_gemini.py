@@ -40,27 +40,47 @@ async def test_gemini():
     mime_type = "image/png"
     
     if len(sys.argv) > 1:
-        img_path = Path(sys.argv[1])
-        if img_path.exists():
-            print(f"[-] Loading image from: {img_path}")
-            image_bytes = img_path.read_bytes()
-            # Detect mime type based on extension
-            ext = img_path.suffix.lower()
-            if ext in [".jpg", ".jpeg"]:
-                mime_type = "image/jpeg"
-            elif ext == ".png":
-                mime_type = "image/png"
-            elif ext == ".webp":
-                mime_type = "image/webp"
-            else:
-                mime_type = "image/jpeg"  # Fallback
-            print(f"    - Detected Mime-Type: {mime_type}")
-            print(f"    - Image Size: {len(image_bytes)} bytes")
+        arg = sys.argv[1]
+        if arg.startswith("http://") or arg.startswith("https://"):
+            print(f"[-] Fetching camera image from: {arg}")
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=20) as client:
+                    resp = await client.get(arg)
+                    resp.raise_for_status()
+                    image_bytes = resp.content
+                    mime_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+                print(f"    - Downloaded {len(image_bytes)} bytes successfully (Mime-type: {mime_type})")
+                
+                # Save the image locally for the user
+                save_path = Path("latest_capture.jpg")
+                save_path.write_bytes(image_bytes)
+                print(f"    - Saved latest camera frame to: {save_path.resolve()}")
+            except Exception as e:
+                print(f"\n[!] Error fetching from camera URL: {e}")
+                return
         else:
-            print(f"\n[!] Error: Provided image path '{img_path}' does not exist.")
-            return
+            img_path = Path(arg)
+            if img_path.exists():
+                print(f"[-] Loading image from: {img_path}")
+                image_bytes = img_path.read_bytes()
+                # Detect mime type based on extension
+                ext = img_path.suffix.lower()
+                if ext in [".jpg", ".jpeg"]:
+                    mime_type = "image/jpeg"
+                elif ext == ".png":
+                    mime_type = "image/png"
+                elif ext == ".webp":
+                    mime_type = "image/webp"
+                else:
+                    mime_type = "image/jpeg"  # Fallback
+                print(f"    - Detected Mime-Type: {mime_type}")
+                print(f"    - Image Size: {len(image_bytes)} bytes")
+            else:
+                print(f"\n[!] Error: Provided image path '{img_path}' does not exist.")
+                return
     else:
-        print("[-] No image file specified in arguments.")
+        print("[-] No image file or URL specified in arguments.")
         print("    Using a built-in 1x1 pixel red image for testing API connectivity.")
         image_bytes = base64.b64decode(TINY_PNG_B64)
         mime_type = "image/png"

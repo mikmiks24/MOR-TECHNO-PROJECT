@@ -36,7 +36,7 @@ class Settings:
     admin_password: str = os.getenv("TMS_ADMIN_PASSWORD", "admin123")
 
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     gemini_timeout_seconds: float = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "45"))
 
     esp32_capture_url: str = os.getenv("ESP32_CAPTURE_URL", "http://192.168.1.50/capture")

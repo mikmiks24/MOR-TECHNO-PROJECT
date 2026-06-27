@@ -22,6 +22,7 @@ from .gemini_client import GeminiNotConfiguredError, analyze_image
 from .schemas import (
     AnalyzeFromCameraRequest,
     AssignmentCreate,
+    EmployeeCreate,
     InspectionCreate,
     LoginRequest,
     ReceiveLogCreate,
@@ -440,6 +441,66 @@ def verify_rfid(payload: RfidVerifyRequest, connection=Depends(get_db)) -> dict[
     )
     connection.commit()
     return {"status": "verified", "employee": row_to_dict(employee)}
+
+
+@app.get("/api/employees")
+def list_employees(q: str | None = None, connection=Depends(get_db)) -> list[dict[str, Any]]:
+    rows = rows_to_dicts(
+        connection.execute(
+            """
+            SELECT id, name, role, username, rfid_uid, active, created_at
+            FROM employees
+            ORDER BY name ASC
+            """
+        ).fetchall()
+    )
+    return filter_rows(rows, q)
+
+
+@app.post("/api/employees")
+def create_employee(payload: EmployeeCreate, connection=Depends(get_db)) -> dict[str, Any]:
+    existing = connection.execute(
+        "SELECT id, name, rfid_uid FROM employees WHERE rfid_uid = ?",
+        (payload.rfid_uid,),
+    ).fetchone()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"RFID UID is already registered to {existing['name']}",
+        )
+
+    if payload.username:
+        username_exists = connection.execute(
+            "SELECT id FROM employees WHERE username = ?",
+            (payload.username,),
+        ).fetchone()
+        if username_exists:
+            raise HTTPException(status_code=409, detail="Username is already registered")
+
+    password_hash = hash_password(payload.password) if payload.password else None
+    cursor = connection.execute(
+        """
+        INSERT INTO employees (name, role, username, password_hash, rfid_uid, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload.name,
+            payload.role,
+            payload.username,
+            password_hash,
+            payload.rfid_uid,
+            payload.active,
+            utc_now(),
+        ),
+    )
+    add_event(
+        connection,
+        event_type="employee_registered",
+        message=f"{payload.name} registered with RFID {payload.rfid_uid}",
+        actor=payload.name,
+    )
+    connection.commit()
+    return {"id": cursor.lastrowid, "status": "created"}
 
 
 @app.get("/api/dashboard")

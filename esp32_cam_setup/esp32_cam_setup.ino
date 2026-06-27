@@ -3,8 +3,8 @@
 #include <WiFi.h>
 
 // Replace these with your Wi-Fi network details.
-const char *WIFI_SSID = "YOUR_WIFI_NAME";
-const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char *WIFI_SSID = "Connect";
+const char *WIFI_PASSWORD = "passwordd";
 
 // Optional labels that the backend can use for traceability.
 const char *DEVICE_ID = "ESP32-CAM-01";

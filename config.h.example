@@ -1,0 +1,8 @@
+#pragma once
+
+// Copy to config.h and fill in your Supabase project values.
+// config.h is not committed — keep your anon key private.
+
+#define SUPABASE_URL        "https://YOUR_PROJECT.supabase.co"
+#define SUPABASE_ANON_KEY   "YOUR_SUPABASE_ANON_KEY"
+#define WORKSTATION_STATION "Bay 1"

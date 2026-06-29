@@ -6,8 +6,13 @@ import uuid
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+import cv2
+import numpy as np
+import os
+from pathlib import Path
 
 from .config import settings
 from .database import (
@@ -17,6 +22,7 @@ from .database import (
     row_to_dict,
     rows_to_dicts,
     utc_now,
+    to_local_iso,
 )
 from .gemini_client import GeminiNotConfiguredError, analyze_image
 from .schemas import (
@@ -30,6 +36,7 @@ from .schemas import (
     RfidVerifyRequest,
     VisualAnalysisResponse,
     VisualMonitorStartRequest,
+    TransactionCreate,
 )
 
 
@@ -51,10 +58,21 @@ visual_monitor_state: dict[str, Any] = {
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_private_network_headers(request: Request, call_next):
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+    response = await call_next(request)
+    return response
 
 
 @app.on_event("startup")
@@ -241,6 +259,293 @@ def visual_monitor_status() -> dict[str, Any]:
     }
 
 
+def enhance_image(image_bytes: bytes) -> bytes:
+    """
+    Applies OpenCV CLAHE contrast enhancement and detail sharpening.
+    Saves both the original and enhanced images locally to `scans/`
+    for comparison and verification.
+    """
+    # 1. Decode JPEG bytes into OpenCV BGR image
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return image_bytes
+
+    # 2. Convert to LAB color space to isolate brightness (L channel)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+
+    # 3. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    cl = clahe.apply(l_channel)
+
+    # 4. Merge enhanced L channel back and convert to BGR
+    limg = cv2.merge((cl, a_channel, b_channel))
+    enhanced_img = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+
+    # 5. Apply details sharpening filter
+    # Sharpening kernel
+    kernel = np.array([
+        [ 0, -1,  0],
+        [-1,  5, -1],
+        [ 0, -1,  0]
+    ])
+    sharpened_img = cv2.filter2D(enhanced_img, -1, kernel)
+
+    # 6. Save original and enhanced versions to scans/ directory
+    try:
+        scans_dir = Path("scans")
+        scans_dir.mkdir(parents=True, exist_ok=True)
+        scan_id = uuid.uuid4().hex[:8]
+        cv2.imwrite(str(scans_dir / f"scan_{scan_id}_original.jpg"), img)
+        cv2.imwrite(str(scans_dir / f"scan_{scan_id}_enhanced.jpg"), sharpened_img)
+    except Exception as e:
+        print(f"Error saving debug scans: {e}")
+
+    # 7. Re-encode as JPEG bytes
+    success, encoded_img = cv2.imencode(".jpg", sharpened_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    if success:
+        return encoded_img.tobytes()
+    return image_bytes
+
+
+COCO_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
+    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake",
+    "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop",
+    "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+]
+
+
+def download_yolo_files() -> tuple[str, str]:
+    models_dir = Path("models")
+    models_dir.mkdir(parents=True, exist_ok=True)
+    
+    cfg_path = models_dir / "yolov4-tiny.cfg"
+    weights_path = models_dir / "yolov4-tiny.weights"
+    
+    cfg_url = "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg"
+    weights_url = "https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights"
+    
+    import urllib.request
+    if not cfg_path.exists():
+        print("[YOLO] Downloading yolov4-tiny.cfg...")
+        urllib.request.urlretrieve(cfg_url, str(cfg_path))
+    if not weights_path.exists():
+        print("[YOLO] Downloading yolov4-tiny.weights (approx. 23MB)...")
+        urllib.request.urlretrieve(weights_url, str(weights_path))
+        
+    return str(cfg_path), str(weights_path)
+
+
+def detect_objects_yolo(image_bytes: bytes) -> tuple[list[str], bytes | None]:
+    try:
+        cfg_path, weights_path = download_yolo_files()
+    except Exception as e:
+        print(f"[YOLO] Error downloading YOLO model files: {e}")
+        return [], None
+
+    # Decode image bytes
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return [], None
+
+    # Load YOLO network
+    try:
+        net = cv2.dnn.readNetFromDarknet(cfg_path, weights_path)
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    except Exception as e:
+        print(f"[YOLO] Error loading YOLO network: {e}")
+        return [], None
+
+    # Determine output layer names
+    ln = net.getLayerNames()
+    try:
+        out_layers = [ln[i - 1] for i in net.getUnconnectedOutLayers()]
+    except Exception:
+        out_layers = [ln[i[0] - 1] for i in net.getUnconnectedOutLayers()]
+
+    # Construct a blob from the image
+    h, w = img.shape[:2]
+    blob = cv2.dnn.blobFromImage(img, 1.0 / 255.0, (416, 416), swapRB=True, crop=False)
+    net.setInput(blob)
+    layer_outputs = net.forward(out_layers)
+
+    boxes = []
+    confidences = []
+    class_ids = []
+
+    # Parse detections
+    for output in layer_outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            if confidence > 0.25:
+                # Scale box coordinates back to image dimensions
+                box = detection[0:4] * np.array([w, h, w, h])
+                (centerX, centerY, width, height) = box.astype("int")
+                x = int(centerX - (width / 2))
+                y = int(centerY - (height / 2))
+                boxes.append([x, y, int(width), int(height)])
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
+
+    # Apply Non-Maximum Suppression (NMS)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.25, 0.4)
+    detected_objects = []
+
+    def map_yolo_to_checklist(label: str) -> list[str]:
+        if label in ("cell phone", "remote"):
+            return ["POS Terminal", "POS Battery"]
+        if label in ("tv", "laptop", "keyboard"):
+            return ["POS Terminal"]
+        if label in ("mouse", "scissors"):
+            return ["LAN Cable", "POS Power Supply"]
+        if label in ("backpack", "handbag", "suitcase", "book"):
+            return ["Packaging / box"]
+        return [label]
+
+    def get_display_label(checklist_label: str) -> str:
+        return checklist_label
+
+    # Compile detected class names and draw debug bounding boxes
+    if len(indices) > 0:
+        indices_flat = indices.flatten() if hasattr(indices, "flatten") else indices
+        for i in indices_flat:
+            class_id = class_ids[i]
+            label = COCO_CLASSES[class_id]
+            
+            # Map COCO label to checklist labels
+            mapped_items = map_yolo_to_checklist(label)
+            detected_objects.extend(mapped_items)
+            
+            # Form display label for box drawing
+            display_label = get_display_label(mapped_items[0]) if mapped_items else label
+            
+            # Draw box on image
+            (x, y) = (boxes[i][0], boxes[i][1])
+            (w_box, h_box) = (boxes[i][2], boxes[i][3])
+            cv2.rectangle(img, (x, y), (x + w_box, y + h_box), (0, 255, 0), 2)
+            cv2.putText(img, f"{display_label}: {confidences[i]:.2f}", (x, y - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    # Save the local detection debug image to scans/
+    annotated_bytes = None
+    try:
+        scans_dir = Path("scans")
+        scans_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(scans_dir / f"local_detect_yolo.jpg"), img)
+        success, encoded_img = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if success:
+            annotated_bytes = encoded_img.tobytes()
+    except Exception as e:
+        print(f"[YOLO] Error saving local detection debug image: {e}")
+
+    return list(set(detected_objects)), annotated_bytes
+
+
+def detect_objects_yolo_boxes(image_bytes: bytes) -> list[dict[str, Any]]:
+    try:
+        cfg_path, weights_path = download_yolo_files()
+    except Exception as e:
+        print(f"[YOLO] Error downloading YOLO model files: {e}")
+        return []
+
+    # Decode image bytes
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return []
+
+    # Load YOLO network
+    try:
+        net = cv2.dnn.readNetFromDarknet(cfg_path, weights_path)
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    except Exception as e:
+        print(f"[YOLO] Error loading YOLO network: {e}")
+        return []
+
+    # Determine output layer names
+    ln = net.getLayerNames()
+    try:
+        out_layers = [ln[i - 1] for i in net.getUnconnectedOutLayers()]
+    except Exception:
+        out_layers = [ln[i[0] - 1] for i in net.getUnconnectedOutLayers()]
+
+    # Construct a blob from the image
+    h, w = img.shape[:2]
+    blob = cv2.dnn.blobFromImage(img, 1.0 / 255.0, (416, 416), swapRB=True, crop=False)
+    net.setInput(blob)
+    layer_outputs = net.forward(out_layers)
+
+    boxes = []
+    confidences = []
+    class_ids = []
+
+    # Parse detections
+    for output in layer_outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            if confidence > 0.25:
+                # Scale box coordinates back to image dimensions
+                box = detection[0:4] * np.array([w, h, w, h])
+                (centerX, centerY, width, height) = box.astype("int")
+                x = int(centerX - (width / 2))
+                y = int(centerY - (height / 2))
+                boxes.append([x, y, int(width), int(height)])
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
+
+    # Apply Non-Maximum Suppression (NMS)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.25, 0.4)
+    results = []
+
+    def map_yolo_to_checklist(label: str) -> list[str]:
+        if label in ("cell phone", "remote"):
+            return ["POS Terminal", "POS Battery"]
+        if label in ("tv", "laptop", "keyboard"):
+            return ["POS Terminal"]
+        if label in ("mouse", "scissors"):
+            return ["LAN Cable", "POS Power Supply"]
+        if label in ("backpack", "handbag", "suitcase", "book"):
+            return ["Packaging / box"]
+        return [label]
+
+    def get_display_label(checklist_label: str) -> str:
+        return checklist_label
+
+    if len(indices) > 0:
+        indices_flat = indices.flatten() if hasattr(indices, "flatten") else indices
+        for i in indices_flat:
+            class_id = class_ids[i]
+            label = COCO_CLASSES[class_id]
+            mapped_items = map_yolo_to_checklist(label)
+            display_label = get_display_label(mapped_items[0]) if mapped_items else label
+            
+            box = boxes[i]
+            results.append({
+                "label": display_label,
+                "confidence": confidences[i],
+                "box": [box[0], box[1], box[2], box[3]],
+                "image_width": w,
+                "image_height": h
+            })
+
+    return results
+
+
 async def fetch_camera_image(capture_url: str) -> tuple[bytes, str]:
     try:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -269,21 +574,42 @@ async def run_visual_analysis(
     extension = ".jpg" if "jpeg" in mime_type or "jpg" in mime_type else ".png"
     image_path = await store_evidence(image_bytes, extension=extension, mime_type=mime_type)
 
+    # 1. Run local object detection
+    local_objects = []
+    annotated_bytes = None
+    try:
+        local_objects, annotated_bytes = detect_objects_yolo(image_bytes)
+        print(f"[YOLO] Local objects detected: {local_objects}")
+    except Exception as e:
+        print(f"[YOLO] Error running local YOLO: {e}")
+
+    annotated_base64 = None
+    if annotated_bytes:
+        import base64
+        annotated_base64 = "data:image/jpeg;base64," + base64.b64encode(annotated_bytes).decode("ascii")
+
+    # 2. Try Gemini analysis
     try:
         result_text, parsed_result = await analyze_image(
             image_bytes,
             mime_type=mime_type,
             prompt=prompt,
         )
-    except GeminiNotConfiguredError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except httpx.HTTPStatusError as error:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Gemini API returned HTTP {error.response.status_code}: {error.response.text}",
-        ) from error
-    except httpx.HTTPError as error:
-        raise HTTPException(status_code=502, detail=f"Gemini request failed: {error}") from error
+        
+        # Combine local YOLO objects with Gemini objects for maximum reliability
+        if parsed_result and "objects" in parsed_result:
+            gemini_objs = parsed_result["objects"] or []
+            parsed_result["objects"] = list(set(gemini_objs + local_objects))
+
+    except Exception as error:
+        # 3. Fallback to local YOLO detection if Gemini API fails
+        print(f"[Gemini] API failed: {error}. Falling back to local YOLO.")
+        parsed_result = {
+            "objects": list(set(local_objects)),
+            "recommended_status": "review",
+            "notes": f"Offline local detection fallback used. Gemini API error: {str(error)}"
+        }
+        result_text = f"Local YOLO Offline Fallback (Gemini API was down)"
 
     now = utc_now()
     status = recommended_status(parsed_result)
@@ -328,6 +654,7 @@ async def run_visual_analysis(
         image_path=image_path,
         serial_number=serial_number,
         station_id=station_id,
+        annotated_image=annotated_base64,
     )
 
 
@@ -378,7 +705,32 @@ def root() -> dict[str, str]:
         "name": settings.app_name,
         "docs": "/docs",
         "health": "/api/health",
+        "workstation": "/workstation",
+        "dashboard": "/dashboard",
     }
+
+
+@app.get("/workstation", response_class=HTMLResponse)
+def serve_workstation():
+    path = Path(__file__).resolve().parents[2] / "INDEX_HTML.h"
+    if path.exists():
+        content = path.read_text(encoding="utf-8")
+        start = content.find('R"rawliteral(')
+        end = content.rfind(')rawliteral"')
+        if start != -1 and end != -1:
+            html = content[start + len('R"rawliteral('):end]
+            cam_url = settings.esp32_capture_url.replace('/capture', '/stream')
+            html = html.replace('__CAM_URL__', cam_url)
+            return HTMLResponse(content=html)
+    return HTMLResponse(content="<h1>Workstation HTML not found</h1>")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def serve_dashboard():
+    path = Path(__file__).resolve().parents[2] / "dashboard.html"
+    if path.exists():
+        return HTMLResponse(content=path.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h1>Dashboard HTML not found</h1>")
 
 
 @app.get("/api/health")
@@ -612,7 +964,7 @@ def list_receive_logs(q: str | None = None, connection=Depends(get_db)) -> list[
 
 @app.post("/api/receive-logs")
 def create_receive_log(payload: ReceiveLogCreate, connection=Depends(get_db)) -> dict[str, Any]:
-    received_at = payload.received_at or utc_now()
+    received_at = to_local_iso(payload.received_at)
     now = utc_now()
     upsert_terminal(
         connection,
@@ -665,7 +1017,7 @@ def list_release_logs(q: str | None = None, connection=Depends(get_db)) -> list[
 
 @app.post("/api/release-logs")
 def create_release_log(payload: ReleaseLogCreate, connection=Depends(get_db)) -> dict[str, Any]:
-    released_at = payload.released_at or utc_now()
+    released_at = to_local_iso(payload.released_at)
     now = utc_now()
     upsert_terminal(
         connection,
@@ -727,6 +1079,8 @@ def create_assignment(payload: AssignmentCreate, connection=Depends(get_db)) -> 
         current_station="Inspection",
         last_handled_by=payload.assigned_staff,
     )
+    started_at = to_local_iso(payload.started_at)
+    ended_at = to_local_iso(payload.ended_at)
     cursor = connection.execute(
         """
         INSERT INTO assignments (
@@ -741,8 +1095,8 @@ def create_assignment(payload: AssignmentCreate, connection=Depends(get_db)) -> 
             payload.brand,
             payload.assigned_staff,
             payload.task_name,
-            payload.started_at,
-            payload.ended_at,
+            started_at,
+            ended_at,
             payload.flagged_conditions,
             payload.status,
             now,
@@ -772,7 +1126,7 @@ def list_inspection_records(q: str | None = None, connection=Depends(get_db)) ->
 
 @app.post("/api/inspection-records")
 def create_inspection_record(payload: InspectionCreate, connection=Depends(get_db)) -> dict[str, Any]:
-    inspected_at = payload.inspected_at or utc_now()
+    inspected_at = to_local_iso(payload.inspected_at)
     now = utc_now()
     upsert_terminal(
         connection,
@@ -868,6 +1222,7 @@ async def analyze_uploaded_image(
         raise HTTPException(status_code=400, detail="Uploaded image is empty")
 
     mime_type = file.content_type or "image/jpeg"
+    image_bytes = enhance_image(image_bytes)
     return await run_visual_analysis(
         image_bytes=image_bytes,
         mime_type=mime_type,
@@ -887,6 +1242,7 @@ async def analyze_from_camera(
     capture_url = payload.capture_url or settings.esp32_capture_url
 
     image_bytes, mime_type = await fetch_camera_image(capture_url)
+    image_bytes = enhance_image(image_bytes)
     return await run_visual_analysis(
         image_bytes=image_bytes,
         mime_type=mime_type,
@@ -896,6 +1252,48 @@ async def analyze_from_camera(
         prompt=payload.prompt,
         connection=connection,
     )
+
+
+@app.post("/api/visual/detect-live")
+async def detect_live(file: UploadFile = File(...)) -> dict[str, Any]:
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded image is empty")
+    boxes = detect_objects_yolo_boxes(image_bytes)
+    return {"boxes": boxes}
+
+
+@app.post("/api/visual/scan-serial")
+async def scan_serial(file: UploadFile = File(...)) -> dict[str, Any]:
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded image is empty")
+    
+    prompt = (
+        "Analyze the image and extract: \n"
+        "1. The terminal's serial number or barcode text.\n"
+        "2. The terminal's brand, model, or manufacturer (e.g., Castles, PAX, Verifone, Ingenico) if visible or known.\n\n"
+        "Return strict JSON with this structure:\n"
+        '{"serial_number": "extracted_serial_or_barcode", "brand": "detected_brand_or_unknown", "reason": "short explanation"}\n\n'
+        "For example, if the barcode text is 'VEGA 3000' and it is a Castles terminal, return "
+        '{"serial_number": "VEGA 3000", "brand": "Castles"}.'
+    )
+    
+    try:
+        result_text, parsed_result = await analyze_image(
+            image_bytes,
+            mime_type="image/jpeg",
+            prompt=prompt
+        )
+        serial_number = None
+        brand = None
+        if parsed_result:
+            serial_number = parsed_result.get("serial_number")
+            brand = parsed_result.get("brand")
+        return {"serial_number": serial_number, "brand": brand}
+    except Exception as e:
+        print(f"[Gemini] Error scanning serial: {e}")
+        return {"serial_number": None, "brand": None, "error": str(e)}
 
 
 @app.post("/api/visual/monitor/start")
@@ -940,3 +1338,122 @@ async def stop_visual_monitor() -> dict[str, Any]:
 @app.get("/api/visual/monitor/status")
 def get_visual_monitor_status() -> dict[str, Any]:
     return visual_monitor_status()
+
+
+@app.post("/api/transaction")
+def create_transaction(payload: TransactionCreate, connection=Depends(get_db)) -> dict[str, Any]:
+    task = payload.task.lower()
+    
+    if task == "receive":
+        status = "In Queue"
+        current_station = payload.station or "Receiving"
+    elif task == "release":
+        status = "Released"
+        current_station = "Release"
+    elif task == "process":
+        notes = (payload.remarks or "").lower()
+        if "defect" in notes:
+            status = "Defect"
+        elif "missing" in notes:
+            status = "Missing"
+        else:
+            status = "Inspection"
+        current_station = "Inspection"
+    else:
+        status = "Processing"
+        current_station = payload.station or "Processing"
+
+    upsert_terminal(
+        connection,
+        serial_number=payload.terminal_id,
+        terminal_model=payload.terminal_model,
+        brand=payload.terminal_brand,
+        status=status,
+        current_station=current_station,
+        last_handled_by=payload.staff_name,
+    )
+
+    if task == "receive":
+        connection.execute(
+            """
+            INSERT INTO receive_logs (
+                serial_number, terminal_model, brand, received_by, source, station_id,
+                status, received_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.terminal_id,
+                payload.terminal_model,
+                payload.terminal_brand,
+                payload.staff_name,
+                "ESP32 Workstation",
+                payload.station,
+                status,
+                to_local_iso(payload.ended_at),
+                utc_now(),
+            ),
+        )
+    elif task == "release":
+        connection.execute(
+            """
+            INSERT INTO release_logs (
+                serial_number, terminal_model, brand, released_by, destination,
+                status, released_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.terminal_id,
+                payload.terminal_model,
+                payload.terminal_brand,
+                payload.staff_name,
+                "Outbound",
+                status,
+                to_local_iso(payload.ended_at),
+                utc_now(),
+            ),
+        )
+    elif task == "process":
+        remarks_outcome = "Completed"
+        if status == "Defect":
+            remarks_outcome = "Defect"
+        elif status == "Missing":
+            remarks_outcome = "Missing"
+            
+        connection.execute(
+            """
+            INSERT INTO inspection_records (
+                serial_number, terminal_model, brand, inspection_task, inspected_by,
+                remarks, inspected_at, evidence_path, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.terminal_id,
+                payload.terminal_model,
+                payload.terminal_brand,
+                "Diagnostic Servicing Check",
+                payload.staff_name,
+                remarks_outcome,
+                to_local_iso(payload.ended_at),
+                None,
+                utc_now(),
+            ),
+        )
+
+    action_verb = "received" if task == "receive" else ("released" if task == "release" else "inspected")
+    message = f"Terminal {payload.terminal_brand} {payload.terminal_model} ({payload.terminal_id}) {action_verb} by {payload.staff_name}"
+    
+    add_event(
+        connection,
+        event_type=task,
+        message=message,
+        actor=payload.staff_name,
+        serial_number=payload.terminal_id,
+        station_id=payload.station,
+    )
+    
+    connection.commit()
+    return {"status": "success", "synced": True}
+

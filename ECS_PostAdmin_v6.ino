@@ -1,13 +1,8 @@
 /*
-  ECS Post Admin v7
+  ECS Post Admin v8
   ─────────────────
   ESP32 + MFRC522 RFID + Web UI
-
-  Wiring (MFRC522 → ESP32):
-    SDA(SS)=21  SCK=18  MOSI=23  MISO=19  RST=22  3.3V  GND
-
-  Serial Monitor @ 115200 — boot prints RFID health + every card tap.
-  Card registration: http://<IP>/register
+  Workflow: Auto-Login -> Blind Scan -> Verification -> Incident Report
 */
 
 #include <WiFi.h>
@@ -17,6 +12,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+
 #include "INDEX_HTML.h"
 #include "config.h"
 
@@ -26,10 +22,10 @@
 #define SPI_MISO   19
 #define SPI_MOSI   23
 
-const char* ssid     = "Connect";
-const char* password = "passwordd";
+const char* ssid     = "Miss Ka Ba";
+const char* password = "jojoho04";
 
-#define ESP32_CAM_STREAM_URL "http://172.22.97.233/stream"
+#define ESP32_CAM_STREAM_URL "http://10.193.115.233/stream"
 
 MFRC522 mfrc522(RFID_SS, RFID_RST);
 WebServer server(80);
@@ -49,122 +45,55 @@ struct StaffEntry {
   const char* role;
 };
 
+// Database of registered cards
 StaffEntry staffDB[] = {
   { "3696C906", "Joshua Zaide", "Senior Technician" },
   { "AABBCCDD", "Maria Santos", "Field Engineer"    },
 };
 const int STAFF_COUNT = sizeof(staffDB) / sizeof(staffDB[0]);
 
-bool supabaseConfigured() {
-  return strlen(SUPABASE_URL) > 10
-      && strstr(SUPABASE_URL, "YOUR_PROJECT") == nullptr
-      && strlen(SUPABASE_ANON_KEY) > 20
-      && strstr(SUPABASE_ANON_KEY, "YOUR_SUPABASE") == nullptr;
-}
 
 String mapStaffId(const String& rfidUid) {
   for (int i = 0; i < STAFF_COUNT; i++) {
     if (rfidUid == String(staffDB[i].uid)) {
-      if (staffDB[i].name == String("Joshua Zaide")) return "STF-JZ";
-      if (staffDB[i].name == String("Maria Santos")) return "STF-MS";
+      if (strcmp(staffDB[i].name, "Joshua Zaide") == 0) return "STF-JZ";
+      if (strcmp(staffDB[i].name, "Maria Santos") == 0) return "STF-MS";
     }
   }
   return "STF-" + rfidUid.substring(0, min(6, (int)rfidUid.length()));
 }
 
-String stationForTask(const char* task) {
-  if (strcmp(task, "receive") == 0) return "Receiving";
-  if (strcmp(task, "release") == 0) return "Release";
-  return "Processing";
-}
+bool saveTransactionToBackend(const String& jsonBody) {
+#ifdef BACKEND_URL
+  if (strlen(BACKEND_URL) < 10 || strstr(BACKEND_URL, "YOUR_BACKEND_IP") != nullptr) {
+    Serial.println("Backend URL not properly configured.");
+    return false;
+  }
 
-String terminalStatusForTask(const char* task) {
-  if (strcmp(task, "receive") == 0) return "in_queue";
-  if (strcmp(task, "release") == 0) return "released";
-  return "processing";
-}
+  WiFiClient client;
+  HTTPClient http;
+  String url = String(BACKEND_URL) + "/api/transaction";
+  
+  if (!http.begin(client, url)) {
+    Serial.println("HTTP connection failed");
+    return false;
+  }
 
-bool supabasePost(const String& table, const String& jsonBody, const char* prefer = "return=minimal", const char* onConflict = nullptr) {
-  if (!supabaseConfigured()) return false;
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST(jsonBody);
+  String response = http.getString();
+  http.end();
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  String url = String(SUPABASE_URL) + "/rest/v1/" + table;
-  if (onConflict) url += String("?on_conflict=") + onConflict;
-  HTTPClient https;
-  if (!https.begin(client, url)) return false;
-
-  https.addHeader("apikey", SUPABASE_ANON_KEY);
-  https.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
-  https.addHeader("Content-Type", "application/json");
-  https.addHeader("Prefer", prefer);
-
-  int code = https.POST(jsonBody);
-  String response = https.getString();
-  https.end();
-
-  Serial.printf("Supabase POST %s -> HTTP %d\n", table.c_str(), code);
+  Serial.printf("Backend POST %s -> HTTP %d\n", url.c_str(), code);
   if (code < 200 || code >= 300) {
     Serial.println(response);
     return false;
   }
   return true;
-}
-
-bool saveTransactionToSupabase(JsonObject doc) {
-  const char* terminalId = doc["terminal_id"] | "";
-  const char* rfidUid = doc["staff_id"] | "";
-  const char* task = doc["task"] | "receive";
-
-  if (!terminalId[0] || !rfidUid[0]) return false;
-
-  String staffId = mapStaffId(String(rfidUid));
-
-  StaticJsonDocument<256> staffDoc;
-  staffDoc["staff_id"] = staffId;
-  staffDoc["name"] = doc["staff_name"] | "Unknown";
-  staffDoc["role"] = doc["staff_role"] | "";
-  staffDoc["station"] = stationForTask(task);
-  staffDoc["rfid_uid"] = rfidUid;
-  String staffJson;
-  serializeJson(staffDoc, staffJson);
-  supabasePost("staff", staffJson, "resolution=merge-duplicates,return=minimal", "staff_id");
-
-  StaticJsonDocument<256> terminalDoc;
-  terminalDoc["terminal_id"] = terminalId;
-  terminalDoc["model"] = doc["terminal_model"] | "PAX A920";
-  terminalDoc["brand"] = doc["terminal_brand"] | "PAX";
-  terminalDoc["status"] = terminalStatusForTask(task);
-  String terminalJson;
-  serializeJson(terminalDoc, terminalJson);
-  supabasePost("terminals", terminalJson, "resolution=merge-duplicates,return=minimal", "terminal_id");
-
-  StaticJsonDocument<2048> logDoc;
-  logDoc["terminal_id"] = terminalId;
-  logDoc["staff_id"] = staffId;
-  logDoc["station"] = stationForTask(task);
-  logDoc["task"] = task;
-  logDoc["timestamp"] = doc["ended_at"] | "";
-  logDoc["photo_url"] = doc["photo_url"] | nullptr;
-
-  JsonObject ai = logDoc.createNestedObject("ai_result");
-  ai["staff_name"] = doc["staff_name"] | "";
-  ai["staff_role"] = doc["staff_role"] | "";
-  ai["rfid_uid"] = rfidUid;
-  ai["workstation"] = WORKSTATION_STATION;
-  ai["remarks"] = doc["remarks"] | "";
-  ai["duration_sec"] = doc["duration_sec"] | 0;
-  ai["items_checked"] = doc["items_checked"] | 0;
-  ai["items_total"] = doc["items_total"] | 0;
-  ai["camera_scan_count"] = doc["camera_scan_count"] | 0;
-  ai["started_at"] = doc["started_at"] | "";
-  ai["ended_at"] = doc["ended_at"] | "";
-  ai["checklist"] = doc["checklist"];
-
-  String logJson;
-  serializeJson(logDoc, logJson);
-  return supabasePost("logs", logJson);
+#else
+  Serial.println("BACKEND_URL not defined.");
+  return false;
+#endif
 }
 
 void serialRule() {
@@ -275,6 +204,10 @@ void heartbeat() {
   Serial.println("[heartbeat] RFID " + String(rfidReady ? "ready" : "OFFLINE") + " — waiting for card…");
 }
 
+// ---------------------------------------------------------
+// SERVER & ESP SETUP
+// ---------------------------------------------------------
+
 void sendProgmemPage(const char* html, bool replaceCam = false) {
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "text/html", "");
@@ -298,7 +231,7 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
 
-  serialHeader("ECS POST ADMIN v7");
+  serialHeader("ECS POST ADMIN v8 (Split-Phase Scanning)");
   Serial.println("Open Serial Monitor at 115200 baud.");
   Serial.println();
 
@@ -343,19 +276,48 @@ void setup() {
     server.send(200, "application/json", json);
   });
 
-  server.on("/api/rfid", HTTP_GET, []() {
-    StaticJsonDocument<128> doc;
-    doc["ready"] = rfidReady;
-    doc["version"] = readRfidVersion();
-    doc["last_uid"] = lastRawUID;
-    String json;
-    serializeJson(doc, json);
-    server.send(200, "application/json", json);
+  server.on("/api/scan", HTTP_POST, []() {
+    serialHeader("CAMERA ITEM SCAN");
+    Serial.println("Triggering backend visual analysis from ESP32...");
+    
+#ifdef BACKEND_URL
+    if (strlen(BACKEND_URL) < 10 || strstr(BACKEND_URL, "YOUR_") != nullptr) {
+      server.send(500, "application/json", "{\"error\":\"Backend URL not configured\"}");
+      return;
+    }
+
+    WiFiClient client;
+    HTTPClient http;
+    String url = String(BACKEND_URL) + "/api/visual/analyze-from-camera";
+    
+    if (!http.begin(client, url)) {
+      server.send(502, "application/json", "{\"error\":\"Failed to connect to backend server\"}");
+      return;
+    }
+    
+    http.addHeader("Content-Type", "application/json");
+    
+    String body = server.hasArg("plain") ? server.arg("plain") : "{}";
+    int code = http.POST(body);
+    String response = http.getString();
+    http.end();
+    
+    Serial.printf("Backend scan response -> HTTP %d\n", code);
+    if (code <= 0) {
+      server.send(502, "application/json", "{\"error\":\"Failed to connect to backend server\"}");
+    } else {
+      server.send(code, "application/json", response);
+    }
+#else
+    server.send(500, "application/json", "{\"error\":\"BACKEND_URL not defined.\"}");
+#endif
+    serialRule();
+    Serial.println();
   });
 
   server.on("/api/capture", HTTP_POST, []() {
-    serialHeader("CAPTURE");
-    Serial.println("Photo capture requested from UI.");
+    serialHeader("CAPTURE FINALIZE");
+    Serial.println("Final photo / task completion triggered.");
     serialRule();
     Serial.println();
     server.send(200, "text/plain", "OK");
@@ -367,25 +329,17 @@ void setup() {
       return;
     }
 
-    StaticJsonDocument<4096> doc;
-    DeserializationError err = deserializeJson(doc, server.arg("plain"));
-    if (err) {
-      server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}");
-      return;
-    }
-
-    serialHeader("TRANSACTION");
+    serialHeader("TRANSACTION SAVED");
     Serial.println(server.arg("plain"));
 
-    bool synced = saveTransactionToSupabase(doc.as<JsonObject>());
-    Serial.println(synced ? "Cloud sync       : OK" : "Cloud sync       : skipped or failed");
+    bool synced = saveTransactionToBackend(server.arg("plain"));
+    Serial.println(synced ? "Backend sync     : OK" : "Backend sync     : skipped or failed");
     serialRule();
     Serial.println();
 
     StaticJsonDocument<128> out;
     out["ok"] = true;
     out["synced"] = synced;
-    out["supabase"] = supabaseConfigured();
     String json;
     serializeJson(out, json);
     server.send(200, "application/json", json);
@@ -393,7 +347,6 @@ void setup() {
 
   server.begin();
   Serial.println("Web server running on port 80.");
-  Serial.println(supabaseConfigured() ? "Supabase         : configured" : "Supabase         : NOT configured (edit config.h)");
   if (rfidReady) {
     Serial.println("Ready — tap a card to test.");
   } else {
@@ -435,9 +388,6 @@ void loop() {
   printCardEvent(uid, name, role, registered);
 
   MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak);
-  Serial.println("Card type        : " + String(mfrc522.PICC_GetTypeName(piccType)));
-  Serial.println();
-
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
   delay(800);

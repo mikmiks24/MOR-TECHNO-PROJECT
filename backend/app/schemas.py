@@ -94,3 +94,31 @@ class VisualAnalysisResponse(BaseModel):
     image_path: str | None = None
     serial_number: str | None = None
     station_id: str | None = None
+    annotated_image: str | None = None
+
+
+class TransactionChecklistItem(BaseModel):
+    label: str
+    checked: bool
+    required: bool
+    source: str
+
+
+class TransactionCreate(BaseModel):
+    terminal_id: str
+    terminal_model: str
+    terminal_brand: str
+    staff_id: str
+    staff_name: str
+    staff_role: str
+    station: str
+    task: str  # "receive", "process", or "release"
+    remarks: str | None = None
+    duration_sec: int = 0
+    items_checked: int = 0
+    items_total: int = 0
+    camera_scan_count: int = 0
+    checklist: list[TransactionChecklistItem] = []
+    started_at: str
+    ended_at: str
+

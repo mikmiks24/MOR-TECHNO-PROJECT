@@ -10,7 +10,18 @@ from .config import settings
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def to_local_iso(iso_str: str | None) -> str:
+    if not iso_str:
+        return utc_now()
+    try:
+        clean_str = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        return dt.astimezone().isoformat(timespec="seconds")
+    except Exception:
+        return iso_str
 
 
 def hash_password(password: str) -> str:
@@ -59,7 +70,11 @@ class PostgresConnectionAdapter:
                 "psycopg is required for Supabase/Postgres. Run: pip install -r backend/requirements.txt"
             ) from error
 
-        self.connection = psycopg.connect(settings.supabase_db_url, row_factory=dict_row)
+        self.connection = psycopg.connect(
+            settings.supabase_db_url,
+            row_factory=dict_row,
+            connect_timeout=10,
+        )
 
     def __enter__(self):
         return self

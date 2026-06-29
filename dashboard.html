@@ -1961,7 +1961,7 @@
 
   <!-- ===== SIDEBAR ===== -->
   <aside class="sidebar">
-    <div class="brand">
+    <div class="brand" style="cursor: pointer" title="Double click to configure Backend URL" ondblclick="window.setBackendUrl()">
       <div class="brand-icon">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>
       </div>
@@ -3013,6 +3013,59 @@
     createGauge("releaseGauge", DEMO.kpi.avgRelease, { green: 120, yellow: 150 }, 180);
     updateGaugeLabels();
 
+    // Dynamic calculations for volumeChart
+    var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    var recCounts = [0, 0, 0, 0, 0, 0, 0];
+    var relCounts = [0, 0, 0, 0, 0, 0, 0];
+    
+    (DEMO.receives || []).forEach(function(r) {
+      if (r.datetime) {
+        var d = new Date(r.datetime.replace(" ", "T"));
+        if (!isNaN(d.getTime())) {
+          recCounts[d.getDay()]++;
+        }
+      }
+    });
+    
+    (DEMO.releases || []).forEach(function(r) {
+      if (r.datetime) {
+        var d = new Date(r.datetime.replace(" ", "T"));
+        if (!isNaN(d.getTime())) {
+          relCounts[d.getDay()]++;
+        }
+      }
+    });
+    
+    var weekRec = recCounts.slice(1, 7);
+    var weekRel = relCounts.slice(1, 7);
+    
+    var recTotal = weekRec.reduce(function(a, b){ return a + b; }, 0);
+    var relTotal = weekRel.reduce(function(a, b){ return a + b; }, 0);
+    if (recTotal === 0 && relTotal === 0) {
+      weekRec = [5, 3, 4, 6, 2, 1]; 
+      weekRel = [4, 3, 3, 5, 2, 1];
+    }
+
+    // Dynamic calculations for anomalyChart
+    var simCount = 0;
+    var damageCount = 0;
+    var adapterCount = 0;
+    
+    (DEMO.inspections || []).forEach(function(i) {
+      if (i.outcome === "defect" || i.outcome === "missing") {
+        var str = (i.serial + " " + i.process + " " + (i.flags || []).join(" ")).toLowerCase();
+        if (str.includes("sim")) simCount++;
+        else if (str.includes("screen") || str.includes("damage") || str.includes("scratch")) damageCount++;
+        else adapterCount++;
+      }
+    });
+    
+    if (simCount === 0 && damageCount === 0 && adapterCount === 0) {
+      simCount = 3;
+      damageCount = 2;
+      adapterCount = 1;
+    }
+
     var queueEl = document.getElementById("queueLineChart");
     if (queueEl) {
       if (chartInstances.queueLine) chartInstances.queueLine.destroy();
@@ -3065,13 +3118,14 @@
 
     var volumeEl = document.getElementById("volumeChart");
     if (volumeEl) {
+      if (chartInstances.volume) chartInstances.volume.destroy();
       chartInstances.volume = new Chart(volumeEl.getContext("2d"), {
         type: "bar",
         data: {
           labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
           datasets: [
-            { label: "Received", data: [52, 48, 61, 55, 49, 22], backgroundColor: t.blue, borderRadius: 4 },
-            { label: "Released", data: [44, 46, 50, 48, 45, 18], backgroundColor: t.greenSoft, borderRadius: 4 }
+            { label: "Received", data: weekRec, backgroundColor: t.blue, borderRadius: 4 },
+            { label: "Released", data: weekRel, backgroundColor: t.greenSoft, borderRadius: 4 }
           ]
         },
         options: {
@@ -3094,12 +3148,13 @@
     }
     var anomalyEl = document.getElementById("anomalyChart");
     if (anomalyEl) {
+      if (chartInstances.anomaly) chartInstances.anomaly.destroy();
       chartInstances.anomaly = new Chart(anomalyEl.getContext("2d"), {
         type: "doughnut",
         data: {
           labels: ["Adaptor", "SIM", "Damage"],
           datasets: [{
-            data: [8, 14, 4],
+            data: [adapterCount, simCount, damageCount],
             backgroundColor: [t.yellowSoft.replace("0.85", "0.85"), t.redSoft, "rgba(99, 102, 241, 0.85)"],
             borderWidth: 2, borderColor: t.border
           }]
@@ -3498,6 +3553,222 @@
     window.closeReassignModal = closeReassignModal;
     window.confirmReassign = confirmReassign;
 
+    var API_BASE = localStorage.getItem("ecs-backend-api") || "http://127.0.0.1:8000";
+
+    window.setBackendUrl = function(url) {
+      if (!url) {
+        url = prompt("Enter Backend FastAPI URL (e.g. http://192.168.1.100:8000):", API_BASE);
+      }
+      if (url) {
+        localStorage.setItem("ecs-backend-api", url);
+        API_BASE = url;
+        fetchDashboardData();
+        showToast("success", "Backend URL Saved", "Connecting to " + url);
+      }
+    };
+
+    async function fetchDashboardData() {
+      try {
+        const [dashRes, recRes, relRes, insRes, empRes, termRes] = await Promise.all([
+          fetch(API_BASE + "/api/dashboard").then(r => r.json()),
+          fetch(API_BASE + "/api/receive-logs").then(r => r.json()),
+          fetch(API_BASE + "/api/release-logs").then(r => r.json()),
+          fetch(API_BASE + "/api/inspection-records").then(r => r.json()),
+          fetch(API_BASE + "/api/employees").then(r => r.json()),
+          fetch(API_BASE + "/api/terminals").then(r => r.json())
+        ]);
+
+        // 1. Map metrics and targets
+        DEMO.kpi = {
+          receiveTarget: 60,
+          releaseTarget: 120,
+          avgReceive: dashRes.metrics.total_received ? Math.round(recRes.reduce((acc, r) => acc + (r.duration || 55), 0) / recRes.length) : 60,
+          avgRelease: dashRes.metrics.total_released ? Math.round(relRes.reduce((acc, r) => acc + (r.duration || 110), 0) / relRes.length) : 120,
+          receiveOnTargetPct: 85,
+          releaseOnTargetPct: 80
+        };
+
+        // 2. Map receives
+        DEMO.receives = recRes.map(r => ({
+          awb: r.source || "N/A",
+          serial: r.serial_number,
+          model: r.terminal_model,
+          staff: r.received_by,
+          bay: r.station_id || "Bay 1",
+          duration: r.duration || 55,
+          datetime: r.received_at ? r.received_at.replace("T", " ").substring(0, 16) : r.created_at.replace("T", " ").substring(0, 16),
+          status: r.status
+        }));
+
+        // 3. Map releases
+        DEMO.releases = relRes.map(r => ({
+          serial: r.serial_number,
+          model: r.terminal_model,
+          staff: r.released_by,
+          bay: "Bay 1",
+          duration: r.duration || 115,
+          destination: r.destination || "Warehouse",
+          datetime: r.released_at ? r.released_at.replace("T", " ").substring(0, 16) : r.created_at.replace("T", " ").substring(0, 16),
+          status: r.status
+        }));
+
+        // 4. Map inspections
+        DEMO.inspections = insRes.map(i => {
+          let outcome = "completed";
+          if (i.remarks === "Defect") outcome = "defect";
+          else if (i.remarks === "Missing") outcome = "missing";
+          return {
+            serial: i.serial_number,
+            model: i.terminal_model,
+            process: i.inspection_task || "Inspection",
+            staff: i.inspected_by,
+            checked: "9/9",
+            outcome: outcome,
+            flags: i.remarks !== "Completed" ? [i.remarks] : [],
+            photo: i.evidence_path || TERMINAL_PHOTOS.pax,
+            datetime: i.inspected_at ? i.inspected_at.replace("T", " ").substring(0, 16) : i.created_at.replace("T", " ").substring(0, 16)
+          };
+        });
+
+        // 5. Map staff performance
+        const performanceMap = {};
+        empRes.forEach(e => {
+          performanceMap[e.name] = {
+            name: e.name,
+            group: e.role === "admin" ? "Admin / billing" : "Servicing Group",
+            received: 0,
+            released: 0,
+            avgReceive: null,
+            avgRelease: null,
+            defectsFlagged: 0
+          };
+        });
+
+        recRes.forEach(r => {
+          if (!performanceMap[r.received_by]) {
+            performanceMap[r.received_by] = { name: r.received_by, group: "Receiving", received: 0, released: 0, avgReceive: null, avgRelease: null, defectsFlagged: 0 };
+          }
+          performanceMap[r.received_by].received++;
+          performanceMap[r.received_by].avgReceive = 58; // fallback average
+        });
+        
+        relRes.forEach(r => {
+          if (!performanceMap[r.released_by]) {
+            performanceMap[r.released_by] = { name: r.released_by, group: "Checking / releasing", received: 0, released: 0, avgReceive: null, avgRelease: null, defectsFlagged: 0 };
+          }
+          performanceMap[r.released_by].released++;
+          performanceMap[r.released_by].avgRelease = 119;
+        });
+        
+        insRes.forEach(i => {
+          if (i.remarks === "Defect" || i.remarks === "Missing") {
+            if (performanceMap[i.inspected_by]) {
+              performanceMap[i.inspected_by].defectsFlagged++;
+            }
+          }
+        });
+        
+        DEMO.staffPerformance = Object.values(performanceMap);
+
+        // 6. Map Activity
+        DEMO.activity = dashRes.recent_activity.map(a => {
+          let timeLabel = "Just now";
+          try {
+            const diffMs = new Date() - new Date(a.created_at + "Z");
+            const diffMin = Math.round(diffMs / 60000);
+            if (diffMin > 60) {
+              const diffHrs = Math.floor(diffMin / 60);
+              timeLabel = diffHrs + "h ago";
+            } else if (diffMin > 0) {
+              timeLabel = diffMin + "m ago";
+            }
+          } catch(e) {}
+          return {
+            text: a.message,
+            time: timeLabel
+          };
+        });
+
+        // 7. Map Alerts
+        DEMO.alerts = insRes
+          .filter(i => i.remarks === "Defect" || i.remarks === "Missing")
+          .map(i => ({
+            id: "alert-" + i.id,
+            severity: i.remarks === "Defect" ? "high" : "warn",
+            title: i.remarks + " found",
+            detail: i.serial_number + " — " + i.inspected_by,
+            serial: i.serial_number,
+            reassignable: true,
+            type: "unit"
+          }));
+
+        DEMO.alerts.push({
+          id: "alert-team-1",
+          severity: "warn",
+          title: "Team Goal",
+          detail: "Keep processing times within targets (Receiving < 1m, Release < 2m)",
+          type: "team"
+        });
+
+        // 8. Map Queue
+        DEMO.queue = termRes
+          .filter(t => t.status !== "Released" && t.status !== "Released")
+          .map(t => ({
+            id: "queue-" + t.serial_number,
+            serial: t.serial_number,
+            model: t.terminal_model,
+            stage: t.status,
+            waitMin: Math.max(1, Math.round((new Date() - new Date(t.updated_at + "Z")) / 60000)) || 10
+          }));
+
+        // 9. Map queue history
+        const hourCounts = {};
+        termRes.forEach(t => {
+          if (t.status !== "Released") {
+            const hour = new Date(t.updated_at + "Z").getHours();
+            const ampm = hour >= 12 ? (hour === 12 ? "12 PM" : (hour - 12) + " PM") : (hour === 0 ? "12 AM" : hour + " AM");
+            hourCounts[ampm] = (hourCounts[ampm] || 0) + 1;
+          }
+        });
+        DEMO.queueHistory = Object.entries(hourCounts).map(([label, count]) => ({ label, count }));
+        if (DEMO.queueHistory.length === 0) {
+          DEMO.queueHistory = [{ label: "Now", count: DEMO.queue.length }];
+        }
+
+        // 10. Map traces
+        const traces = {};
+        const eventsRes = await fetch(API_BASE + "/api/events").then(r => r.json());
+        eventsRes.forEach(e => {
+          if (e.serial_number) {
+            if (!traces[e.serial_number]) traces[e.serial_number] = [];
+            const dt = fmtDateTimeParts(e.created_at);
+            traces[e.serial_number].push({
+              time: dt.date + " " + dt.time,
+              event: e.event_type.charAt(0).toUpperCase() + e.event_type.slice(1),
+              detail: e.message
+            });
+          }
+        });
+        DEMO.traces = traces;
+
+        renderDashboard();
+        renderReceiveTable();
+        renderReleaseTable();
+        renderPerformanceTable();
+        renderInspectionTable();
+        renderHistoryTables();
+        try { initCharts(); } catch (err) { console.warn("Charts skipped:", err); }
+      } catch (err) {
+        console.error("Error fetching live backend data:", err);
+        renderDashboard();
+        renderReceiveTable();
+        renderReleaseTable();
+        renderPerformanceTable();
+        renderInspectionTable();
+        renderHistoryTables();
+      }
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
       applyTheme(localStorage.getItem("ecs-theme") || "light");
 
@@ -3517,14 +3788,13 @@
 
       var dashSk = document.getElementById("dash-skeleton");
       if (dashSk) dashSk.classList.add("show");
-      setTimeout(function () {
-        renderDashboard();
-        renderReceiveTable();
-        renderReleaseTable();
-        renderPerformanceTable();
-        renderInspectionTable();
-        renderHistoryTables();
-      }, 380);
+      
+      fetchDashboardData().then(function() {
+        hideDashboardSkeleton();
+        try { initCharts(); } catch (err) { console.warn("Charts skipped:", err); }
+        // Start live polling every 5 seconds
+        setInterval(fetchDashboardData, 5000);
+      });
 
       var loginBtn = document.getElementById("loginBtn");
       var passwordInput = document.getElementById("password");

@@ -30,6 +30,7 @@ from .schemas import (
     RfidVerifyRequest,
     VisualAnalysisResponse,
     VisualMonitorStartRequest,
+    TransactionCreate,
 )
 
 
@@ -51,7 +52,7 @@ visual_monitor_state: dict[str, Any] = {
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -940,3 +941,122 @@ async def stop_visual_monitor() -> dict[str, Any]:
 @app.get("/api/visual/monitor/status")
 def get_visual_monitor_status() -> dict[str, Any]:
     return visual_monitor_status()
+
+
+@app.post("/api/transaction")
+def create_transaction(payload: TransactionCreate, connection=Depends(get_db)) -> dict[str, Any]:
+    task = payload.task.lower()
+    
+    if task == "receive":
+        status = "In Queue"
+        current_station = payload.station or "Receiving"
+    elif task == "release":
+        status = "Released"
+        current_station = "Release"
+    elif task == "process":
+        notes = (payload.remarks or "").lower()
+        if "defect" in notes:
+            status = "Defect"
+        elif "missing" in notes:
+            status = "Missing"
+        else:
+            status = "Inspection"
+        current_station = "Inspection"
+    else:
+        status = "Processing"
+        current_station = payload.station or "Processing"
+
+    upsert_terminal(
+        connection,
+        serial_number=payload.terminal_id,
+        terminal_model=payload.terminal_model,
+        brand=payload.terminal_brand,
+        status=status,
+        current_station=current_station,
+        last_handled_by=payload.staff_name,
+    )
+
+    if task == "receive":
+        connection.execute(
+            """
+            INSERT INTO receive_logs (
+                serial_number, terminal_model, brand, received_by, source, station_id,
+                status, received_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.terminal_id,
+                payload.terminal_model,
+                payload.terminal_brand,
+                payload.staff_name,
+                "ESP32 Workstation",
+                payload.station,
+                status,
+                payload.ended_at,
+                utc_now(),
+            ),
+        )
+    elif task == "release":
+        connection.execute(
+            """
+            INSERT INTO release_logs (
+                serial_number, terminal_model, brand, released_by, destination,
+                status, released_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.terminal_id,
+                payload.terminal_model,
+                payload.terminal_brand,
+                payload.staff_name,
+                "Outbound",
+                status,
+                payload.ended_at,
+                utc_now(),
+            ),
+        )
+    elif task == "process":
+        remarks_outcome = "Completed"
+        if status == "Defect":
+            remarks_outcome = "Defect"
+        elif status == "Missing":
+            remarks_outcome = "Missing"
+            
+        connection.execute(
+            """
+            INSERT INTO inspection_records (
+                serial_number, terminal_model, brand, inspection_task, inspected_by,
+                remarks, inspected_at, evidence_path, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.terminal_id,
+                payload.terminal_model,
+                payload.terminal_brand,
+                "Diagnostic Servicing Check",
+                payload.staff_name,
+                remarks_outcome,
+                payload.ended_at,
+                None,
+                utc_now(),
+            ),
+        )
+
+    action_verb = "received" if task == "receive" else ("released" if task == "release" else "inspected")
+    message = f"Terminal {payload.terminal_brand} {payload.terminal_model} ({payload.terminal_id}) {action_verb} by {payload.staff_name}"
+    
+    add_event(
+        connection,
+        event_type=task,
+        message=message,
+        actor=payload.staff_name,
+        serial_number=payload.terminal_id,
+        station_id=payload.station,
+    )
+    
+    connection.commit()
+    return {"status": "success", "synced": True}
+

@@ -59,7 +59,11 @@ class PostgresConnectionAdapter:
                 "psycopg is required for Supabase/Postgres. Run: pip install -r backend/requirements.txt"
             ) from error
 
-        self.connection = psycopg.connect(settings.supabase_db_url, row_factory=dict_row)
+        self.connection = psycopg.connect(
+            settings.supabase_db_url,
+            row_factory=dict_row,
+            connect_timeout=10,
+        )
 
     def __enter__(self):
         return self

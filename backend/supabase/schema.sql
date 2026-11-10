@@ -1,4 +1,4 @@
--- Supabase/Postgres schema for the TMS traceability backend.
+    -- Supabase/Postgres schema for the TMS traceability backend.
 -- Run this in Supabase SQL Editor before starting the backend, or allow the backend
 -- to create these tables when SUPABASE_DB_URL is configured with schema privileges.
 

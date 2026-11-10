@@ -3,8 +3,8 @@
 #include <WiFi.h>
 
 // Replace these with your Wi-Fi network details.
-const char *WIFI_SSID = "Connect";
-const char *WIFI_PASSWORD = "passwordd";
+const char *WIFI_SSID = "Miss Ka Ba";
+const char *WIFI_PASSWORD = "jojoho04";
 
 // Optional labels that the backend can use for traceability.
 const char *DEVICE_ID = "ESP32-CAM-01";
@@ -87,6 +87,7 @@ void handleCapture() {
   client.setNoDelay(true);
   client.print(
       "HTTP/1.1 200 OK\r\n"
+      "Access-Control-Allow-Origin: *\r\n"
       "Content-Type: image/jpeg\r\n"
       "Content-Disposition: inline; filename=capture.jpg\r\n"
       "Content-Length: ");
@@ -103,6 +104,7 @@ void handleStream() {
 
   client.print(
       "HTTP/1.1 200 OK\r\n"
+      "Access-Control-Allow-Origin: *\r\n"
       "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
       "Cache-Control: no-cache\r\n"
       "Connection: close\r\n\r\n");
@@ -119,10 +121,14 @@ void handleStream() {
     client.print("Content-Length: ");
     client.print(frame->len);
     client.print("\r\n\r\n");
-    client.write(frame->buf, frame->len);
+    size_t written = client.write(frame->buf, frame->len);
     client.print("\r\n");
-
     esp_camera_fb_return(frame);
+
+    if (written < frame->len) {
+      Serial.println("Send failed, client disconnected");
+      break;
+    }
 
     if (!client.connected()) {
       break;

@@ -3569,14 +3569,35 @@
 
     async function fetchDashboardData() {
       try {
-        const [dashRes, recRes, relRes, insRes, empRes, termRes] = await Promise.all([
+        const [dashRes, insRes, empRes, termRes] = await Promise.all([
           fetch(API_BASE + "/api/dashboard").then(r => r.json()),
-          fetch(API_BASE + "/api/receive-logs").then(r => r.json()),
-          fetch(API_BASE + "/api/release-logs").then(r => r.json()),
           fetch(API_BASE + "/api/inspection-records").then(r => r.json()),
           fetch(API_BASE + "/api/employees").then(r => r.json()),
           fetch(API_BASE + "/api/terminals").then(r => r.json())
         ]);
+        const recRes = termRes
+          .filter(t => ["In Queue", "Received"].includes(t.status) || t.current_station === "Receiving")
+          .map(t => ({
+            source: "Current status",
+            serial_number: t.serial_number,
+            terminal_model: t.terminal_model,
+            received_by: t.last_handled_by,
+            station_id: t.current_station,
+            received_at: t.updated_at,
+            created_at: t.updated_at,
+            status: t.status
+          }));
+        const relRes = termRes
+          .filter(t => t.status === "Released" || t.current_station === "Release")
+          .map(t => ({
+            serial_number: t.serial_number,
+            terminal_model: t.terminal_model,
+            released_by: t.last_handled_by,
+            destination: "Release",
+            released_at: t.updated_at,
+            created_at: t.updated_at,
+            status: t.status
+          }));
 
         // 1. Map metrics and targets
         DEMO.kpi = {
@@ -3735,19 +3756,25 @@
           DEMO.queueHistory = [{ label: "Now", count: DEMO.queue.length }];
         }
 
-        // 10. Map traces
+        // 10. Build traces from current terminal state and saved inspections.
         const traces = {};
-        const eventsRes = await fetch(API_BASE + "/api/events").then(r => r.json());
-        eventsRes.forEach(e => {
-          if (e.serial_number) {
-            if (!traces[e.serial_number]) traces[e.serial_number] = [];
-            const dt = fmtDateTimeParts(e.created_at);
-            traces[e.serial_number].push({
-              time: dt.date + " " + dt.time,
-              event: e.event_type.charAt(0).toUpperCase() + e.event_type.slice(1),
-              detail: e.message
-            });
-          }
+        insRes.forEach(i => {
+          if (!traces[i.serial_number]) traces[i.serial_number] = [];
+          const dt = fmtDateTimeParts(i.inspected_at || i.created_at);
+          traces[i.serial_number].push({
+            time: dt.date + " " + dt.time,
+            event: "Inspection",
+            detail: i.inspected_by + " recorded " + i.remarks
+          });
+        });
+        termRes.forEach(t => {
+          if (!traces[t.serial_number]) traces[t.serial_number] = [];
+          const dt = fmtDateTimeParts(t.updated_at);
+          traces[t.serial_number].push({
+            time: dt.date + " " + dt.time,
+            event: "Current status",
+            detail: t.status + (t.current_station ? " at " + t.current_station : "")
+          });
         });
         DEMO.traces = traces;
 

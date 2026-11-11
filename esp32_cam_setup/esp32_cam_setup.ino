@@ -121,6 +121,10 @@ void handleStream() {
     client.print("Content-Length: ");
     client.print(frame->len);
     client.print("\r\n\r\n");
+<<<<<<< HEAD
+=======
+    
+>>>>>>> e8c9c233e2e41076c3aded945f80de0bec262015
     size_t written = client.write(frame->buf, frame->len);
     client.print("\r\n");
     esp_camera_fb_return(frame);
@@ -186,23 +190,13 @@ void setupCamera() {
   config.fb_count = psramFound() ? 2 : 1;
 
   Serial.println("Initializing camera...");
-  Serial.print("PSRAM found: ");
-  Serial.println(psramFound() ? "yes" : "no");
-  Serial.print("Camera frame size: ");
-  Serial.println(static_cast<int>(CAMERA_FRAME_SIZE));
-  Serial.print("JPEG quality: ");
-  Serial.println(CAMERA_JPEG_QUALITY);
-
   esp_err_t error = esp_camera_init(&config);
   if (error != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x\n", error);
-    Serial.println("Check the camera ribbon cable, board model, and 5V power supply.");
-    Serial.flush();
     while (true) {
       delay(1000);
     }
   }
-
   Serial.println("Camera initialized");
 }
 
@@ -229,12 +223,6 @@ void setup() {
 
   Serial.println();
   Serial.println("ESP32-CAM setup sketch starting...");
-  Serial.print("Device ID: ");
-  Serial.println(DEVICE_ID);
-  Serial.print("Station ID: ");
-  Serial.println(STATION_ID);
-  Serial.print("Wi-Fi SSID: ");
-  Serial.println(WIFI_SSID);
 
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);

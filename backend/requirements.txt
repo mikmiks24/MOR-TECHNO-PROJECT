@@ -4,3 +4,5 @@ httpx
 python-multipart
 python-dotenv
 psycopg[binary]
+opencv-python
+numpy

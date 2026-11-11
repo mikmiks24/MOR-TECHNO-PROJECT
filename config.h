@@ -7,4 +7,8 @@
 #define WORKSTATION_STATION "Bay 1"
 
 // FastAPI Backend URL (replace with your laptop's local network IP)
+<<<<<<< HEAD
 #define BACKEND_URL         "http://192.168.254.144:8000"
+=======
+#define BACKEND_URL         "http://10.193.115.151:8000"
+>>>>>>> e8c9c233e2e41076c3aded945f80de0bec262015

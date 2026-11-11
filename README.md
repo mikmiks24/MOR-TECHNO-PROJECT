@@ -10,7 +10,7 @@ It provides a FastAPI server with:
 
 - Supabase/Postgres workflow database with SQLite fallback
 - RFID staff verification endpoint
-- receive and release log APIs
+- current terminal status API
 - staff assignment API
 - inspection history API
 - dashboard metrics API
@@ -71,7 +71,11 @@ POST /api/employees
 Backend storage:
 
 - `employees` table: registered staff and RFID UID master list
-- `events` table: RFID verified/denied/registered audit trail
+- `terminals` table: current status and last-handled-by information
+
+The simplified database does not keep a separate event or receive/release history
+table. Existing databases are not automatically cleared, so old records remain
+untouched.
 
 Configure these values before uploading:
 

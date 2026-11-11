@@ -6,10 +6,15 @@ The backend is the central server for:
 
 - admin dashboard data
 - RFID staff verification
-- terminal receive and release logs
+- current terminal status
 - staff task assignments
 - inspection history
 - ESP32-CAM image capture analysis through Gemini
+
+The database uses SQLite locally by default, or Supabase/Postgres when configured. Its
+core tables are `employees`, `terminals`, `assignments`, `inspection_records`,
+`visual_analyses`, and their related records. Receive/release operations update the
+terminal's current status; they do not create separate history logs.
 
 ## Architecture
 
@@ -151,7 +156,8 @@ The response includes `database_backend` and `supabase_configured`.
 | POST | `/api/rfid/verify` | Verify staff RFID UID from the workstation |
 | GET/POST | `/api/employees` | List/register employees and RFID UIDs |
 
-RFID verification checks `employees.rfid_uid`. Each tap is logged in `events` as `rfid_verified` or `rfid_denied`.
+RFID verification checks `employees.rfid_uid`. Verification results are returned to
+the workstation and are not saved to a separate event log.
 
 Prototype employee/RFID registration:
 
@@ -170,12 +176,10 @@ curl -X POST http://localhost:8000/api/employees \
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| GET/POST | `/api/receive-logs` | Terminal receiving records |
-| GET/POST | `/api/release-logs` | Terminal release records |
+| GET | `/api/terminals` | Current terminal status |
 | GET/POST | `/api/assignments` | Staff task assignments |
 | GET/POST | `/api/inspection-records` | Inspection/checklist records |
-| GET | `/api/history` | Combined receive/release audit trail |
-| GET | `/api/events` | Real-time activity log |
+| POST | `/api/transaction` | Update a terminal's receive, release, or processing status |
 
 Every list route supports `?q=searchText`.
 
@@ -268,10 +272,8 @@ For a short test run, use `max_cycles`:
 Your current frontend has hard-coded table rows and metric values. Replace those static values with calls to:
 
 - `/api/dashboard` for metric cards, charts, and recent activity
-- `/api/receive-logs` for the receive table
-- `/api/release-logs` for the release table
+- `/api/terminals` for current terminal status
 - `/api/assignments` for the task table
-- `/api/history` for the terminal history view
 - `/api/inspection-records` for inspection history
 - `/api/visual/analyze-from-camera` for the Gemini analyzer button
 - `/api/visual/monitor/start`, `/status`, and `/stop` for automatic camera analysis
